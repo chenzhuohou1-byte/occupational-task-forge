@@ -213,6 +213,8 @@ def _cmp_csv(name, exp_rows, got_rows):
         rk = (er.get(key) or "").strip()
         gr = gmap.get(rk, {})
         for col, v in er.items():
+            if col == key:
+                continue   # 行键只用于对齐行（集合一致已由硬闸门把关），不计分，否则格式对就白拿分
             total += 1
             ok = _eq(v, gr.get(col))
             passed += 1 if ok else 0
