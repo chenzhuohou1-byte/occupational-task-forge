@@ -37,17 +37,15 @@ MAIN_TEMPLATE = r'''#!/usr/bin/env python3
 输出契约：score / passed(bool) / errors[] / details[{path,expected,observed,correct}]。
 """
 import argparse
-import csv
 import json
 import os
-import re
 import shutil
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "assets")
 EXPECTED = os.path.join(ASSETS, "reference", "expected")
-TOL = 0.01
 
 
 def load():
@@ -104,138 +102,16 @@ def neg(out_dir):
     os.remove(first)                         # 其余：删文件 → 缺交付文件硬闸门
 
 
-def _flatten(obj, prefix=""):
-    items = {}
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            items.update(_flatten(v, prefix + "/" + str(k)))
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            items.update(_flatten(v, prefix + "[" + str(i) + "]"))
-    else:
-        items[prefix] = obj
-    return items
-
-
-def _eq(a, b):
-    try:
-        return abs(float(a) - float(b)) <= TOL
-    except (TypeError, ValueError):
-        return str(a).strip() == str(b).strip()
-
-
-def _cmp_json(name, exp, got):
-    fe = _flatten(exp)
-    gg = _flatten(got) if got is not None else {}
-    details = []
-    passed = 0
-    for k, v in fe.items():
-        ok = k in gg and _eq(v, gg[k])
-        passed += 1 if ok else 0
-        details.append({"path": name + "#" + k, "expected": v,
-                        "observed": gg.get(k), "correct": ok})
-    return passed, len(fe), details
-
-
-def _key_set_csv(rows):
-    if not rows:
-        return set()
-    key = list(rows[0].keys())[0]
-    return set((r.get(key) or "").strip() for r in rows)
-
-
-def _cmp_csv(name, exp_rows, got_rows):
-    if not exp_rows:
-        return 0, 0, []
-    key = list(exp_rows[0].keys())[0]
-    gmap = {(r.get(key) or "").strip(): r for r in got_rows}
-    details = []
-    passed = 0
-    total = 0
-    for er in exp_rows:
-        rk = (er.get(key) or "").strip()
-        gr = gmap.get(rk, {})
-        for col, v in er.items():
-            total += 1
-            ok = _eq(v, gr.get(col))
-            passed += 1 if ok else 0
-            details.append({"path": "%s#%s.%s" % (name, rk, col), "expected": v,
-                            "observed": gr.get(col), "correct": ok})
-    return passed, total, details
-
-
-def _read_json(p):
-    try:
-        return json.load(open(p, encoding="utf-8"))
-    except (ValueError, OSError):
-        return None
-
-
-def _fail(errors):
-    return {"score": 0.0, "passed": False, "errors": errors, "details": []}
-
-
 def evaluate(output_dir, reference_dir):
-    expected = os.path.join(reference_dir, "expected")
-    exp_files = sorted(os.listdir(expected))
-    errors = []
-
-    # 硬闸门1：交付文件齐全
-    for name in exp_files:
-        if not os.path.exists(os.path.join(output_dir, name)):
-            errors.append("缺少交付文件 " + name)
-    if errors:
-        return _fail(errors)
-
-    # 硬闸门2/3：JSON 缺顶层键 / CSV 首列行键集合不一致
-    parsed = {}
-    for name in exp_files:
-        ep = os.path.join(expected, name)
-        gp = os.path.join(output_dir, name)
-        if name.endswith(".json"):
-            e = _read_json(ep)
-            g = _read_json(gp)
-            if g is None:
-                errors.append(name + " 不是合法 JSON")
-            elif isinstance(e, dict):
-                miss = [k for k in e if not isinstance(g, dict) or k not in g]
-                if miss:
-                    errors.append("%s 缺顶层键：%s" % (name, "、".join(map(str, miss))))
-            parsed[name] = ("json", e, g)
-        elif name.endswith(".csv"):
-            e = list(csv.DictReader(open(ep, encoding="utf-8-sig")))
-            g = list(csv.DictReader(open(gp, encoding="utf-8-sig")))
-            if _key_set_csv(e) != _key_set_csv(g):
-                miss = sorted(_key_set_csv(e) - _key_set_csv(g))
-                extra = sorted(_key_set_csv(g) - _key_set_csv(e))
-                errors.append("%s 行集合不一致（漏报=%s 多报=%s）" % (name, miss or "无", extra or "无"))
-            parsed[name] = ("csv", e, g)
-        else:
-            parsed[name] = ("text",
-                            re.sub(r"\s+", "", open(ep, encoding="utf-8", errors="ignore").read()),
-                            re.sub(r"\s+", "", open(gp, encoding="utf-8", errors="ignore").read()))
-    if errors:
-        return _fail(errors)
-
-    # 过闸后：字段值层给部分分
-    details = []
-    passed = 0
-    total = 0
-    for name in exp_files:
-        kind, e, g = parsed[name]
-        if kind == "json":
-            p, t, d = _cmp_json(name, e, g)
-        elif kind == "csv":
-            p, t, d = _cmp_csv(name, e, g)
-        else:
-            eq = e == g
-            p, t, d = (1 if eq else 0), 1, [{"path": name, "expected": "<text>",
-                                             "observed": "<text>", "correct": eq}]
-        passed += p
-        total += t
-        details += d
-    score = round(passed / total, 4) if total else 0.0
-    return {"score": score, "passed": score >= 1.0, "errors": [], "details": details}
+    """判分逻辑已拆到独立脚本（判分契约 §1）：调用 scripts/score_outputs.py，取其 stdout 契约 JSON。"""
+    scorer = os.path.join(HERE, "scripts", "score_outputs.py")
+    r = subprocess.run([sys.executable, scorer, "--output", output_dir,
+                        "--reference", reference_dir], capture_output=True, text=True)
+    try:
+        return json.loads(r.stdout)
+    except (ValueError, TypeError):
+        why = ("判分器故障（退出码 %d）：" % r.returncode) if r.returncode else "判分器未输出合法 JSON："
+        return {"score": 0.0, "passed": False, "errors": [why + (r.stderr or r.stdout)[:400]], "details": []}
 
 
 def main():
@@ -268,6 +144,163 @@ def main():
 
 if __name__ == "__main__":
     main()
+'''
+
+
+# 通用判分器模板（独立脚本，判分契约 §1）。写进每个脚手架任务的 scripts/score_outputs.py。
+SCORER_TEMPLATE = r'''#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""通用判分器（pipeline.scaffold 生成）—— 判分契约 v1.0 §1/§2，独立可跑、不 import 其他模块。
+
+比对 output/ 与 reference/expected/：JSON 逐叶子 / CSV 逐格 / 文本规范化，数值带容差 TOL。
+硬闸门（任一不过 → 整题 0）：缺交付文件 / CSV 首列行键集合不一致 / JSON 缺顶层键。
+只读 --output / --reference，不碰 input/，不 import 造题/生成器代码（§8 独立性）。
+"""
+import argparse
+import csv
+import json
+import os
+import sys
+
+TOL = 0.01
+
+
+def _flatten(obj, prefix=""):
+    items = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            items.update(_flatten(v, prefix + "/" + str(k)))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            items.update(_flatten(v, prefix + "[" + str(i) + "]"))
+    else:
+        items[prefix] = obj
+    return items
+
+
+def _eq(a, b):
+    try:
+        return abs(float(a) - float(b)) <= TOL
+    except (TypeError, ValueError):
+        return str(a).strip() == str(b).strip()
+
+
+def _cmp_json(name, exp, got):
+    fe = _flatten(exp)
+    gg = _flatten(got) if got is not None else {}
+    details, passed = [], 0
+    for k, v in fe.items():
+        ok = k in gg and _eq(v, gg[k])
+        passed += 1 if ok else 0
+        details.append({"path": name + "#" + k, "expected": v, "observed": gg.get(k), "correct": ok})
+    return passed, len(fe), details
+
+
+def _key_set_csv(rows):
+    if not rows:
+        return set()
+    key = list(rows[0].keys())[0]
+    return set((r.get(key) or "").strip() for r in rows)
+
+
+def _cmp_csv(name, exp_rows, got_rows):
+    if not exp_rows:
+        return 0, 0, []
+    key = list(exp_rows[0].keys())[0]
+    gmap = {(r.get(key) or "").strip(): r for r in got_rows}
+    details, passed, total = [], 0, 0
+    for er in exp_rows:
+        rk = (er.get(key) or "").strip()
+        gr = gmap.get(rk, {})
+        for col, v in er.items():
+            total += 1
+            ok = _eq(v, gr.get(col))
+            passed += 1 if ok else 0
+            details.append({"path": "%s#%s.%s" % (name, rk, col), "expected": v,
+                            "observed": gr.get(col), "correct": ok})
+    return passed, total, details
+
+
+def _read_json(p):
+    try:
+        return json.load(open(p, encoding="utf-8-sig"))
+    except (ValueError, OSError):
+        return None
+
+
+def _emit(score, passed, errors, details, missing=(), extra=()):
+    print(json.dumps({
+        "score": round(float(score), 4), "passed": bool(passed), "errors": list(errors),
+        "details": details, "missing_paths": list(missing), "extra_paths": list(extra),
+        "meta": {"scorer": "score_outputs.py", "version": "1.0", "mode": "generic_tabular"},
+    }, ensure_ascii=False))
+    return 0
+
+def score(output_dir, reference_dir):
+    expected = os.path.join(reference_dir, "expected")
+    if not os.path.isdir(expected):
+        sys.exit("判分器故障：标准答案目录不存在 " + expected)
+    exp_files = sorted(f for f in os.listdir(expected) if os.path.isfile(os.path.join(expected, f)))
+    if not exp_files:
+        sys.exit("判分器故障：expected/ 为空")
+    missing = [n for n in exp_files if not os.path.exists(os.path.join(output_dir, n))]
+    if missing:
+        return _emit(0.0, False, ["缺少交付文件：" + "、".join(missing)], [], missing)
+    errors, parsed = [], {}
+    for name in exp_files:
+        ep = os.path.join(expected, name)
+        gp = os.path.join(output_dir, name)
+        if name.endswith(".json"):
+            e, g = _read_json(ep), _read_json(gp)
+            if g is None:
+                errors.append(name + " 不是合法 JSON")
+            elif isinstance(e, dict):
+                miss = [k for k in e if not isinstance(g, dict) or k not in g]
+                if miss:
+                    errors.append("%s 缺顶层键：%s" % (name, "、".join(map(str, miss))))
+            parsed[name] = ("json", e, g)
+        elif name.endswith(".csv"):
+            e = list(csv.DictReader(open(ep, encoding="utf-8-sig")))
+            g = list(csv.DictReader(open(gp, encoding="utf-8-sig")))
+            if _key_set_csv(e) != _key_set_csv(g):
+                mk = sorted(_key_set_csv(e) - _key_set_csv(g))
+                ek = sorted(_key_set_csv(g) - _key_set_csv(e))
+                errors.append("%s 行集合不一致（漏报=%s 多报=%s）" % (name, mk or "无", ek or "无"))
+            parsed[name] = ("csv", e, g)
+        else:
+            ne = "".join(open(ep, encoding="utf-8", errors="ignore").read().split())
+            ng = "".join(open(gp, encoding="utf-8", errors="ignore").read().split())
+            parsed[name] = ("text", ne, ng)
+    if errors:
+        return _emit(0.0, False, errors, [])
+    details, passed, total = [], 0, 0
+    for name in exp_files:
+        kind, e, g = parsed[name]
+        if kind == "json":
+            p, t, d = _cmp_json(name, e, g)
+        elif kind == "csv":
+            p, t, d = _cmp_csv(name, e, g)
+        else:
+            eq = e == g
+            p, t, d = (1 if eq else 0), 1, [{"path": name, "expected": "<text>", "observed": "<text>", "correct": eq}]
+        passed += p
+        total += t
+        details += d
+    sc = round(passed / total, 4) if total else 0.0
+    return _emit(sc, sc >= 1.0, [], details)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--reference", required=True)
+    ap.add_argument("--variant", default=None)
+    a = ap.parse_args()
+    return score(a.output, a.reference)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 '''
 
 
@@ -365,7 +398,7 @@ def scaffold_task(spec, tasks_dir):
             "artifactModes": ["structured_tabular"],
             "composition": ["gate_and_score"],
             "locale": "host",
-            "scorer": "main.py（evaluate 子命令，通用逐字段判分）",
+            "scorer": "scripts/score_outputs.py",
             "passRule": "交付文件齐全 AND 集合/键一致（硬闸门）AND 逐字段全对",
             "hardGates": [
                 "缺任一交付文件 → 0",
@@ -383,7 +416,7 @@ def scaffold_task(spec, tasks_dir):
             },
         },
         "元数据": spec.get("元数据", {"机器规格": "2C4G", "超时秒": 1800, "判分构成": "纯代码",
-                                      "schema": "判分契约 v1.0", "待办": "判分器拆独立 scripts/score_outputs.py（§1 纯度，可选）"}),
+                                      "schema": "判分契约 v1.0"}),
         "scoringBasis": [],
     }
 
@@ -392,6 +425,7 @@ def scaffold_task(spec, tasks_dir):
            json.dumps(card, ensure_ascii=False, indent=2) + "\n")
     _write(os.path.join(task_dir, "main.py"),
            MAIN_TEMPLATE.replace("__TASK_TITLE__", name))
+    _write(os.path.join(task_dir, "scripts", "score_outputs.py"), SCORER_TEMPLATE)
 
     # 附件（input）与标准答案（reference/expected）占位，等作者填真实数据。
     # 已由附件规格造出真实文件的不再写占位符，也不进 todos。
