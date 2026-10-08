@@ -1,0 +1,20 @@
+# —— 不入版本库：内部信息 ——
+# 本机配置（含 key 与私有数据路径）
+.env
+# 网关价目表（含结算倍率），内部商务信息
+pipeline/pricing.local.json
+# 运行产物：含模型名与实测通过率，属内部评测数据
+runs/
+# 真实任务数据（题面/附件/标准答案）。框架开源、数据私有；
+# 用 ALE_TASKS_DIR 指向仓库外的私有目录。仅放行 _demo/ 下的玩具任务。
+tasks/*
+!tasks/_demo/
+!tasks/_demo/**
+
+# —— 常规 ——
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+venv/
+*.egg-info/

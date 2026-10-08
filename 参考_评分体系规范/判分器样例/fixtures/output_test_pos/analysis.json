@@ -1,0 +1,39 @@
+{
+  "_comment": "正例：标准答案原样提交。预期 score = 1.0, passed = true",
+  "findings": [
+    {
+      "type": "missing_item",
+      "severity": "critical",
+      "amount_impact": -103200,
+      "responsible_party": "施工方",
+      "clause": "合同第 5.2 条",
+      "description": "BG-05 边坡支护变更已按设计变更单实施，但承包人未申报该项工程量，属漏报。",
+      "evidence": [
+        "承包人未申报 BG-05 项（边坡支护变更）工程量"
+      ]
+    },
+    {
+      "type": "quantity_error",
+      "severity": "high",
+      "amount_impact": 254600,
+      "responsible_party": "施工方",
+      "clause": "计量规范第 4.1 条",
+      "description": "土方开挖与钢筋制安的申报工程量均高于监理实测值。",
+      "evidence": [
+        "实测完成工程量为 10,052 m³",
+        "本月实际完成钢筋制安 362.0 t"
+      ]
+    },
+    {
+      "type": "mispricing",
+      "severity": "medium",
+      "amount_impact": 21400,
+      "responsible_party": "造价咨询方",
+      "clause": "合同第 7.4 条",
+      "description": "综合单价调整未见发包人书面确认，不应予以计量。",
+      "evidence": [
+        "未经确认的单价调整不予计量"
+      ]
+    }
+  ]
+}

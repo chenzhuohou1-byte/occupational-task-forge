@@ -1,0 +1,12 @@
+{
+  "_comment": "负例：刻意做坏的答案（结论缺 evidence 字段，结构不完整）。预期 score = 0.0, passed = false",
+  "findings": [
+    {
+      "type": "missing_item",
+      "severity": "critical",
+      "amount_impact": -103200,
+      "responsible_party": "施工方",
+      "clause": "合同第 5.2 条"
+    }
+  ]
+}

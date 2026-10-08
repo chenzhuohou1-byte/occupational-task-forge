@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ALE 式数据集控制台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #0f1420; color: #e6ebf5; }
+  header { padding: 18px 24px; background: #151b2b; border-bottom: 1px solid #263149; }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 4px 0 0; color: #8b98b4; font-size: 12px; }
+  .wrap { display: flex; gap: 16px; padding: 16px 24px; align-items: flex-start; }
+  .col { flex: 1; min-width: 0; }
+  .bar { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+  button { cursor: pointer; border: 1px solid #33415f; background: #1c2438; color: #dbe3f4;
+           border-radius: 6px; padding: 5px 11px; font-size: 12px; }
+  button:hover { background: #26314c; }
+  button.primary { background: #2b5cff; border-color: #2b5cff; color: #fff; }
+  button.warn { border-color: #6b4a1f; }
+  .card { background: #151b2b; border: 1px solid #263149; border-radius: 10px;
+          padding: 14px; margin-bottom: 12px; }
+  .card h3 { margin: 0 0 4px; font-size: 14px; }
+  .meta { color: #8b98b4; font-size: 12px; margin-bottom: 8px; }
+  .tag { display: inline-block; background: #223; border: 1px solid #33415f; border-radius: 4px;
+         padding: 1px 7px; margin-right: 6px; font-size: 11px; color: #a9b6d6; }
+  .prompt { color: #b7c2dc; font-size: 12px; max-height: 60px; overflow: hidden;
+            border-left: 2px solid #33415f; padding-left: 8px; }
+  .btns { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
+  pre { background: #0b0f18; border: 1px solid #263149; border-radius: 8px; padding: 12px;
+        overflow: auto; max-height: 70vh; font-size: 12px; color: #cfe0ff; white-space: pre-wrap; }
+  .ok { color: #46d38a; } .bad { color: #ff6b6b; }
+  .pill { font-weight: 600; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+  .pill.pass { background: #123c28; color: #46d38a; }
+  .pill.fail { background: #3c1a1a; color: #ff6b6b; }
+  h2.sec { font-size: 13px; color: #8b98b4; text-transform: uppercase; letter-spacing: .5px; }
+  .status { color: #8b98b4; font-size: 12px; min-height: 18px; }
+  .frow { display: flex; align-items: flex-start; gap: 8px; margin: 6px 0; }
+  .frow label { width: 78px; color: #a9b6d6; font-size: 12px; padding-top: 5px; flex: none; }
+  .frow input, .frow textarea { flex: 1; background: #0b0f18; border: 1px solid #33415f;
+        color: #e6ebf5; border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 12px; }
+  .barchart { margin: 10px 0; }
+  .barrow { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 12px; }
+  .barrow .lab { width: 130px; color: #a9b6d6; flex: none; text-align: right; }
+  .barrow .track { flex: 1; background: #0b0f18; border-radius: 5px; overflow: hidden; height: 16px; }
+  .barrow .fill { height: 100%; background: linear-gradient(90deg,#2b5cff,#46d38a); }
+  .barrow .val { width: 64px; flex: none; color: #cfe0ff; }
+  #tasks { max-height: 48vh; overflow: auto; border: 1px solid #263149; border-radius: 8px; padding: 6px; }
+  .trow { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-bottom: 1px solid #1c2333; }
+  .trow:last-child { border-bottom: 0; }
+  .trow .tname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trow .tbtns { display: flex; gap: 5px; flex: none; }
+  .trow button { padding: 3px 8px; font-size: 12px; }
+  .efile { margin: 10px 0; }
+  .efile textarea { width: 100%; min-height: 120px; background: #0b0f18; border: 1px solid #33415f;
+        color: #dbe7ff; border-radius: 6px; padding: 8px; font: 12px/1.5 ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ALE 式数据集控制台</h1>
+  <p>选材 · 造题 · 判分 · 三道校验(N6) · 地板审计(N8) · 盲解(N7) — 基于本地 pipeline</p>
+</header>
+
+<div class="wrap">
+  <div class="col" style="flex: 1.2">
+    <div class="bar">
+      <button class="primary" onclick="loadTasks()">刷新任务</button>
+      <button onclick="qc(null)">全量三道校验+地板审计</button>
+      <button onclick="blind(null)">全量盲解(N7)</button>
+      <button onclick="loadRuns()">运行记录</button>
+      <button onclick="loadStats()">看板/统计</button>
+      <button onclick="toggleSelect()">选材(N1)</button>
+      <button onclick="toggleForm()">＋ 造新任务</button>
+      <button onclick="toggleSettings()">⚙ 设置(LLM)</button>
+    </div>
+
+    <div class="card" id="selectPanel" style="display:none">
+      <h3>选材(N1)：职业 → 十个工作面</h3>
+      <div class="meta">从中国职业分类里选一个职业，用当前 LLM 生成候选工作面（会真实调用一次模型）。</div>
+      <div class="frow"><label>领域</label>
+        <select id="s_domain" onchange="fillOcc()"></select></div>
+      <div class="frow"><label>职业</label>
+        <select id="s_occ"></select></div>
+      <div class="btns"><button class="primary" onclick="runSelect()">生成工作面</button></div>
+      <div id="faces"></div>
+    </div>
+
+    <div class="card" id="settingsPanel" style="display:none">
+      <h3>LLM 设置（内网网关）</h3>
+      <div class="meta" id="cfgStatus">读取中…</div>
+      <div class="frow"><label>provider</label>
+        <select id="c_provider">
+          <option value="mock">mock（离线不花钱）</option>
+          <option value="openai">openai（走网关，真实调用）</option>
+        </select></div>
+      <div class="frow"><label>网关地址</label><input id="c_base" placeholder="如 http://内网网关/v1"></div>
+      <div class="frow"><label>model</label><input id="c_model" placeholder="如 ernie-4.5 / gpt-4o-mini"></div>
+      <div class="frow"><label>API Key</label><input id="c_key" type="password" placeholder="留空则不修改已存的 key"></div>
+      <div class="meta bad">注意：key 仅存于本机服务进程内存、不落盘；请勿在共享机器上使用。</div>
+      <div class="btns"><button class="primary" onclick="saveConfig()">保存并生效</button></div>
+    </div>
+
+    <div class="card" id="scaffoldForm" style="display:none">
+      <h3>造新任务（N3/N4 脚手架）</h3>
+      <div class="meta">生成可跑骨架；生成后需去 assets/ 填真实附件与标准答案，QC 才会放行。</div>
+      <div class="frow"><label>领域</label><input id="f_domain" placeholder="如 财务"></div>
+      <div class="frow"><label>任务名</label><input id="f_name" placeholder="如 增值税进项核对"></div>
+      <div class="frow"><label>task_id</label><input id="f_id" placeholder="如 caiwu-jinxiang-001"></div>
+      <div class="frow"><label>题面 prompt</label><textarea id="f_prompt" rows="3" placeholder="像真实派活，不写步骤"></textarea></div>
+      <div class="frow"><label>交付文件</label><input id="f_deliver" placeholder="逗号分隔，如 汇总.json,结果.csv"></div>
+      <div class="frow"><label>附件文件</label><input id="f_attach" placeholder="逗号分隔，如 进项票.csv,规则.md"></div>
+      <div class="btns"><button class="primary" onclick="submitScaffold()">生成骨架</button></div>
+    </div>
+    <div class="status" id="status"></div>
+    <div id="tasks"></div>
+  </div>
+  <div class="col">
+    <h2 class="sec">结果</h2>
+    <div id="result"><pre>点左侧按钮开始。</pre></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const setStatus = (t) => { $("status").textContent = t; };
+const show = (obj) => {
+  $("result").innerHTML = "<pre>" + escapeHtml(JSON.stringify(obj, null, 2)) + "</pre>";
+};
+function escapeHtml(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+
+async function api(path, method, body){
+  const opt = { method: method || "GET" };
+  if (body){ opt.headers = {"Content-Type":"application/json"}; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  return r.json();
+}
+
+async function loadTasks(){
+  setStatus("加载任务…");
+  const tasks = await api("/api/tasks");
+  $("tasks").innerHTML = tasks.map(cardHtml).join("");
+  setStatus("共 " + tasks.length + " 条任务");
+}
+
+function cardHtml(t){
+  const id = t.task_id;
+  return `<div class="trow" title="${escapeHtml(t.prompt||"")}">
+    <div class="tname"><b>${escapeHtml(t["任务名"]||id)}</b>
+      <span class="tag">${escapeHtml(t["领域"]||"-")}</span>
+      <span class="tag">${escapeHtml(t["难度层"]||"-")}</span></div>
+    <div class="tbtns">
+      <button class="primary" onclick="run('${id}','golden')">标准解</button>
+      <button class="warn" onclick="run('${id}','neg')">负例</button>
+      <button onclick="run('${id}','empty')">地板</button>
+      <button onclick="qc('${id}')">校验</button>
+      <button onclick="blind('${id}')">盲解</button>
+      <button onclick="editTask('${id}')">编辑数据</button>
+    </div>
+  </div>`;
+}
+
+function rawBlock(obj){
+  return `<details style="margin-top:10px"><summary style="cursor:pointer;color:#8b98b4;font-size:12px">查看原始 JSON</summary><pre>${escapeHtml(JSON.stringify(obj, null, 2))}</pre></details>`;
+}
+
+async function run(id, solver){
+  setStatus(`跑 ${id} (${solver})…`);
+  const r = await api("/api/run","POST",{task_id:id, solver});
+  const ok = r.passed === true;
+  const pill = `<span class="pill ${ok?"pass":"fail"}">${ok?"✓ 通过":"✗ 未过"} · score=${r.score}</span>`;
+  let line = "";
+  if (r.details && r.details.length){
+    const p = r.details.filter(d=>d.correct || d["通过"]).length;
+    line = `<div class="meta">判分明细 ${p}/${r.details.length} 项通过</div>`;
+  }
+  const err = (r.errors && r.errors.length) ? `<div class="bad">硬闸门/错误：${escapeHtml(r.errors.join("；"))}</div>` : "";
+  $("result").innerHTML = `<div class="card"><h3>${escapeHtml(r.task_id)} ${pill}</h3>${line}${err}</div>` + rawBlock(r);
+  setStatus("完成");
+}
+
+function renderQc(data){
+  const head = `<div class="meta">共 ${data["任务数"]} 条 · 可进库 <b class="ok">${data["可进库"]}</b> / ${data["任务数"]}</div>`;
+  const cards = (data["结果"]||[]).map(r=>{
+    const light = r["进库"] ? '<span class="pill pass">✓ 可进库</span>' : '<span class="pill fail">✗ 不可进库</span>';
+    const checks = ((r.N6&&r.N6.checks)||[]).map(c=>{
+      const mk = c["通过"] ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>';
+      return `${mk} ${escapeHtml(c["检查"])}`;
+    }).join("<br>");
+    let n8 = "";
+    if (r.N8){
+      const mk = r.N8["通过"] ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>';
+      n8 = `<br>${mk} 地板审计（空解得分 ${r.N8["floor_score"]}，${escapeHtml(r.N8["说明"]||"")}）`;
+    }
+    return `<div class="card"><h3>${escapeHtml(r.task_id)} ${light}</h3><div class="prompt">${checks}${n8}</div></div>`;
+  }).join("");
+  $("result").innerHTML = head + cards + rawBlock(data);
+}
+async function qc(id){
+  setStatus("三道校验+地板审计…"); renderQc(await api("/api/qc","POST", id?{task_id:id}:{})); setStatus("完成");
+}
+
+function renderBlind(data){
+  const rate = ((data["基线通过率"]||0)*100).toFixed(1);
+  const head = `<div class="card"><h3>盲解基线</h3><div class="meta">通过 ${data["盲解通过"]}/${data["任务数"]} · 通过率 ${rate}% · 成本 ¥${data["成本RMB"]}</div></div>`;
+  const rows = (data["结果"]||[]).map(r=>{
+    const mk = (r.score>=1) ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>';
+    return `<div class="barrow"><div class="lab">${escapeHtml(r.task_id||"")}</div>
+      <div class="track"><div class="fill" style="width:${Math.round((r.score||0)*100)}%"></div></div>
+      <div class="val">${mk} ${r.score}</div></div>`;
+  }).join("");
+  $("result").innerHTML = head + `<div class="card">${rows}</div>` + rawBlock(data);
+}
+async function blind(id){
+  if (!id){
+    const [tasks, cfg] = [await api("/api/tasks"), await api("/api/config")];
+    const n = tasks.length;
+    const note = cfg.provider === "mock"
+      ? "当前为 mock 离线模式：不真正解题、不产生费用（分数会是 0）。"
+      : `当前 provider=${cfg.provider}，model=${cfg.model}：会真实调用 LLM，产生费用。`;
+    if (!confirm(`全量盲解将对 ${n} 条任务各调用一次模型（约 ${n} 次）。\n${note}\n确定继续？`)){ setStatus("已取消"); return; }
+  }
+  setStatus("盲解中…"); renderBlind(await api("/api/blind","POST", id?{task_id:id}:{})); setStatus("完成");
+}
+async function loadRuns(){
+  setStatus("读取运行记录…");
+  const runs = await api("/api/runs");
+  $("result").innerHTML = runs.map(r =>
+    `<div class="card"><h3>${r.run_id}</h3>
+      <div class="btns"><button onclick="viewRun('${r.run_id}')">查看结果</button></div></div>`
+  ).join("") || "<pre>暂无运行记录</pre>";
+  setStatus("共 " + runs.length + " 次运行");
+}
+async function viewRun(id){ show(await api("/api/run?id="+encodeURIComponent(id))); }
+
+function toggleForm(){
+  const f = $("scaffoldForm");
+  f.style.display = f.style.display === "none" ? "block" : "none";
+}
+
+let OCC = null;
+async function toggleSelect(){
+  const p = $("selectPanel");
+  const showing = p.style.display === "none";
+  p.style.display = showing ? "block" : "none";
+  if (showing && !OCC){
+    const data = await api("/api/occupations");
+    const domains = (data && typeof data === "object" && !data.error)
+      ? Object.keys(data).filter(k => Array.isArray(data[k])) : [];
+    if (!domains.length){
+      $("s_domain").innerHTML = "";
+      $("faces").innerHTML = `<div class="bad">职业码表接口不可用（多半是服务是旧进程）。请重启：先停掉再 <code>python -m pipeline.server</code>，然后刷新页面。</div>`;
+      setStatus("接口 /api/occupations 无数据");
+      return;   // 不缓存，下次展开重试
+    }
+    OCC = data;
+    $("s_domain").innerHTML = domains.map(d=>`<option>${escapeHtml(d)}</option>`).join("");
+    fillOcc();
+  }
+}
+function fillOcc(){
+  const d = $("s_domain").value;
+  const list = (OCC && Array.isArray(OCC[d])) ? OCC[d] : [];
+  $("s_occ").innerHTML = list.map(o=>`<option>${escapeHtml(o)}</option>`).join("");
+}
+let FACES = [];
+async function runSelect(){
+  const occ = $("s_occ").value;
+  if (!occ){ setStatus("请先选择职业（码表未加载？试试重启服务）"); return; }
+  setStatus("选材中（调用 LLM 生成工作面）…");
+  const r = await api("/api/select","POST",{occupation: occ});
+  if (!r || !Array.isArray(r.faces)){
+    $("faces").innerHTML = `<div class="bad">选材接口未返回结果：${escapeHtml((r && (r.error||JSON.stringify(r)))||"无响应")}。若提示 not found，请重启服务。</div>`;
+    setStatus("选材失败"); return;
+  }
+  FACES = r.faces;
+  const note = r.provider === "mock"
+    ? `<span class="bad">当前 mock 离线（占位输出，不是真实工作面）。请先点 ⚙ 设置(LLM) 切到网关再生成。</span>`
+    : `（provider=${escapeHtml(r.provider)}，成本 ¥${r["成本RMB"]}）`;
+  $("faces").innerHTML = `<div class="meta">职业「${escapeHtml(occ)}」的候选工作面 ${note}</div>` +
+    FACES.map((f,i)=>`<div class="barrow"><div class="lab" style="width:auto;flex:1;text-align:left">${escapeHtml(f)}</div>
+      <button onclick="useFace(${i})">用它造任务</button></div>`).join("");
+  setStatus("选材完成");
+}
+function useFace(i){
+  const face = FACES[i];
+  if (face === undefined) return;
+  $("scaffoldForm").style.display = "block";
+  $("f_domain").value = $("s_domain").value;
+  $("f_name").value = face;
+  $("f_prompt").focus();
+  $("scaffoldForm").scrollIntoView({behavior:"smooth", block:"center"});
+  setStatus("已带入造新任务表单，请补全题面与交付文件");
+}
+async function toggleSettings(){
+  const p = $("settingsPanel");
+  const showing = p.style.display === "none";
+  p.style.display = showing ? "block" : "none";
+  if (showing) await refreshCfg();
+}
+async function refreshCfg(){
+  const c = await api("/api/config");
+  $("c_provider").value = c.provider;
+  $("c_base").value = c.api_base || "";
+  $("c_model").value = c.model || "";
+  $("cfgStatus").innerHTML = `当前：provider=<b>${escapeHtml(c.provider)}</b> · model=${escapeHtml(c.model)} · `
+    + (c.key_set ? `key 已设置(${escapeHtml(c.key_tail)})` : `<span class="bad">key 未设置</span>`);
+}
+async function saveConfig(){
+  const body = {
+    provider: $("c_provider").value,
+    api_base: $("c_base").value.trim(),
+    model: $("c_model").value.trim(),
+  };
+  const key = $("c_key").value;
+  if (key) body.api_key = key;   // 留空则不改动已存 key
+  setStatus("保存 LLM 设置…");
+  await api("/api/config","POST",body);
+  $("c_key").value = "";
+  await refreshCfg();
+  setStatus("已生效（后续盲解按新设置调用）");
+}
+function splitList(s){ return (s||"").split(/[,，]/).map(x=>x.trim()).filter(Boolean); }
+async function submitScaffold(){
+  const deliver = {};
+  splitList($("f_deliver").value).forEach(fn => deliver[fn] = "交付文件");
+  const spec = {
+    "领域": $("f_domain").value.trim(),
+    "任务名": $("f_name").value.trim(),
+    "task_id": $("f_id").value.trim() || ("auto-" + Date.now()),
+    "prompt": $("f_prompt").value.trim(),
+    "交付要求": deliver,
+    "附件计划": splitList($("f_attach").value),
+  };
+  if (!spec["领域"] || !spec["任务名"] || !spec.prompt || !Object.keys(deliver).length){
+    setStatus("请填写 领域/任务名/题面/至少一个交付文件"); return;
+  }
+  setStatus("生成骨架…");
+  const r = await api("/api/scaffold","POST",{spec});
+  show(r); setStatus("已生成，去 assets/ 填数据后再 QC"); loadTasks();
+}
+
+function bar(label, ratio, valText){
+  const pct = Math.max(0, Math.min(1, ratio)) * 100;
+  return `<div class="barrow"><div class="lab">${escapeHtml(label)}</div>
+    <div class="track"><div class="fill" style="width:${pct.toFixed(1)}%"></div></div>
+    <div class="val">${escapeHtml(valText)}</div></div>`;
+}
+async function loadStats(){
+  setStatus("汇总看板…");
+  const s = await api("/api/stats");
+  let html = `<div class="card"><h3>累计 LLM 成本（粗估）</h3>
+    <pre>¥ ${s.cost_total_rmb}（≈ ${(s.cost_total_rmb/0.3).toFixed(1)} Request）</pre>
+    <div class="meta">${escapeHtml(s.cost_note||"")}　<a href="${s.bill_url}" target="_blank" style="color:#4aa8ff">查看实际账单 /mine →</a></div></div>`;
+  const qc = (s.qc||[]).slice(-8).map(r =>
+    bar(r.run_id, r["任务数"]? r["可进库"]/r["任务数"]:0, `${r["可进库"]}/${r["任务数"]}`)).join("");
+  html += `<div class="card"><h3>QC 可进库比例（近 8 次）</h3><div class="barchart">${qc||"暂无"}</div></div>`;
+  const bl = (s.blind||[]).slice(-8).map(r =>
+    bar(r.run_id, r["基线通过率"]||0, ((r["基线通过率"]*100).toFixed(1))+"%")).join("");
+  html += `<div class="card"><h3>盲解基线通过率（近 8 次）</h3><div class="barchart">${bl||"暂无"}</div></div>`;
+  $("result").innerHTML = html;
+  setStatus("完成");
+}
+
+let EDIT = {id:null, files:[]};
+async function editTask(id){
+  setStatus("读取任务数据…");
+  const data = await api("/api/task?task_id="+encodeURIComponent(id));
+  if (!data || !Array.isArray(data.files)){
+    $("result").innerHTML = `<div class="bad">读取失败：${escapeHtml((data&&data.error)||"无响应")}（若 not found 请重启服务）</div>`;
+    setStatus("读取失败"); return;
+  }
+  EDIT = {id: id, files: data.files};
+  const editable = data.files.filter(f=>f.editable);
+  let html = `<div class="card"><h3>编辑数据：${escapeHtml(id)}</h3>
+    <div class="meta">input/ 是给 agent 的材料；reference/expected/ 是藏起来的标准答案。改完点「保存全部并校验」。</div>
+    <div class="btns"><button class="primary" onclick="saveAllAndQc()">保存全部并校验(QC)</button>
+      <button onclick="syncSchema()">从标准答案同步字段说明</button>
+      <button onclick="run('${id}','golden')">跑标准解</button></div></div>`;
+  editable.forEach((f,i)=>{
+    html += `<div class="card efile"><h3>${escapeHtml(f.rel)}</h3>
+      <textarea id="ef_${i}"></textarea>
+      <div class="btns"><button onclick="saveEditFile(${i})">保存此文件</button></div></div>`;
+  });
+  const bins = data.files.filter(f=>!f.editable);
+  if (bins.length) html += `<div class="card"><div class="meta">二进制/不可编辑：${bins.map(b=>escapeHtml(b.rel)).join("、")}</div></div>`;
+  $("result").innerHTML = html;
+  editable.forEach((f,i)=>{ $("ef_"+i).value = f.content; });
+  setStatus("共 "+editable.length+" 个可编辑文件");
+}
+async function saveEditFile(i){
+  const editable = EDIT.files.filter(f=>f.editable);
+  const f = editable[i];
+  const r = await api("/api/task_file","POST",{task_id:EDIT.id, rel:f.rel, content:$("ef_"+i).value});
+  setStatus(r && r.ok ? ("已保存 "+f.rel) : ("保存失败："+((r&&r.error)||"?")));
+}
+async function saveAllAndQc(){
+  const editable = EDIT.files.filter(f=>f.editable);
+  setStatus("保存全部…");
+  for (let i=0;i<editable.length;i++){ await saveEditFile(i); }
+  await qc(EDIT.id);
+}
+async function syncSchema(){
+  setStatus("从标准答案反推字段说明…");
+  const r = await api("/api/sync_schema","POST",{task_id:EDIT.id});
+  if (r && r.updated){
+    setStatus("已把字段说明写回题面的交付要求，可刷新任务查看");
+    show({"已同步的交付要求(字段说明)": r.updated});
+  } else {
+    setStatus((r && (r.skipped||r.error)) || "同步失败");
+  }
+}
+
+loadTasks();
+</script>
+</body>
+</html>

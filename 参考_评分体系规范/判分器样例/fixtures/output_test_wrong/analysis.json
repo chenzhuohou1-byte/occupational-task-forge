@@ -1,0 +1,27 @@
+{
+  "_comment": "诊断例（非验收项）：结构完整、格式合法，但内容错——标签判错、金额离谱、证据全是编造的。用于确认部分分与反幻觉机制真的在工作。预期 score 明显低于 1.0 且 evidence_grounding = 0",
+  "findings": [
+    {
+      "type": "schedule_impact",
+      "severity": "low",
+      "amount_impact": 999999999,
+      "responsible_party": "监理方",
+      "clause": "不存在的条款第 99 条",
+      "description": "编造的结论一。",
+      "evidence": [
+        "本合同约定工期为 365 日历天，逾期每日按合同价款的千分之一计取违约金。"
+      ]
+    },
+    {
+      "type": "scope_dispute",
+      "severity": "low",
+      "amount_impact": 1,
+      "responsible_party": "监理方",
+      "clause": "不存在的条款第 98 条",
+      "description": "编造的结论二。",
+      "evidence": [
+        "承包人在投标文件中承诺的施工组织设计已获得发包人批准。"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "findings": [
+    {
+      "type": "missing_item",
+      "severity": "critical",
+      "priority": 3,
+      "amount_impact": -103200,
+      "responsible_party": "施工方",
+      "clause": "合同第 5.2 条",
+      "note": "BG-05 边坡支护变更已实施但未申报，属漏报项"
+    },
+    {
+      "type": "quantity_error",
+      "severity": "high",
+      "priority": 2,
+      "amount_impact": 254600,
+      "responsible_party": "施工方",
+      "clause": "计量规范第 4.1 条",
+      "note": "土方与钢筋申报量均高于监理实测值"
+    },
+    {
+      "type": "mispricing",
+      "severity": "medium",
+      "priority": 1,
+      "amount_impact": 21400,
+      "responsible_party": "造价咨询方",
+      "clause": "合同第 7.4 条",
+      "note": "综合单价调整未见发包人书面确认"
+    }
+  ]
+}
