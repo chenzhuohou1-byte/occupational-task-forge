@@ -105,7 +105,8 @@
 
     <div class="card" id="scaffoldForm" style="display:none">
       <h3>造新任务（N3/N4 脚手架）</h3>
-      <div class="meta">生成可跑骨架；生成后需去 assets/ 填真实附件与标准答案，QC 才会放行。</div>
+      <div class="meta">生成可跑骨架；生成后需去 assets/ 填真实附件与标准答案，QC 才会放行。<br>
+      想让<b>模型自动起草</b>题面/交付/附件（不用手填），命令行跑：<code>python3 -m pipeline.cli build --occupation "职业"</code></div>
       <div class="frow"><label>领域</label><input id="f_domain" placeholder="如 财务"></div>
       <div class="frow"><label>任务名</label><input id="f_name" placeholder="如 增值税进项核对"></div>
       <div class="frow"><label>task_id</label><input id="f_id" placeholder="如 caiwu-jinxiang-001"></div>
