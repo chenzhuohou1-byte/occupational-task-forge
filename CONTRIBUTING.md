@@ -6,7 +6,8 @@
 1. 接受仓库邀请 → `git clone`。
 2. **开防漏钩子**（必做）：仓根执行 `git config core.hooksPath .githooks`。它拦住误入提交的 `tasks/ runs/ .env *.local.json`，防私有数据/密钥进公开仓。
 3. **配环境**：复制 `.env.example` 为 `.env`，填你自己的网关地址与 key。跑真实模型时**务必设 `ALE_LLM_REASONING_EFFORT=low`**，否则推理型模型会把 token 预算烧光、返空（细节见 `pipeline/llm.py` 注释）。
-4. **读两份权威**：判分唯一权威 [`判分契约_v1.0.md`](判分契约_v1.0.md)；操作流程 [`docs/新增一条数据-playbook.md`](docs/新增一条数据-playbook.md)。范例任务「造价 / 个税」两条由 owner 另行发你（不在仓里）。
+4. **拉私有数据仓**：数据不在本框架仓，在私有仓 `chenzhuohou1-byte/occupational-task-forge-data`（已把你加进去）。`git clone` 它，把 `.env` 里的 `ALE_TASKS_DIR` 指向这个 clone 的路径。范例任务「造价 / 个税」就在里面。
+5. **读两份权威**：判分唯一权威 [`判分契约_v1.0.md`](判分契约_v1.0.md)；操作流程 [`docs/新增一条数据-playbook.md`](docs/新增一条数据-playbook.md)。
 
 ## 二、造一条数据（照 playbook 走）
 `build` 起草 → 定事实来源（**闭世界法最稳**：规则/费率/税率表写进题面材料，答案由材料唯一推出）→ 造附件 + **脚本复算标准答案并手工抽验（绝不手抄）** → 判分器（表格类直接用生成的 `scripts/score_outputs.py`）→ 四档夹具 → `qc --all` 要 `进库=True` → **N7 难度体检**。
@@ -15,8 +16,8 @@
 
 ## 三、提交
 - 在**分支**上做，开 **PR**，等 1 个评审合并——main 不能直推。
-- **框架/代码**改动走本仓 PR。
-- **数据绝不进仓**（`tasks/ runs/` 已忽略、钩子也拦）；你的任务数据交到：**`<由 owner 指定的共享位置>`**。
+- **框架/代码**改动走**本仓**（occupational-task-forge）PR。
+- **你的任务数据提交到私有数据仓** `occupational-task-forge-data`（不是本仓）；`tasks/ runs/` 在本仓已被忽略、钩子也拦，别往本仓塞数据。
 
 ## 四、协调（避免撞车）
 - 开工前**认领**你要做的职业/领域，别和别人重复。
