@@ -10,8 +10,20 @@ Excel/Word/PDF；不带则沿用占位符文件、把待填清单挂在 todos �
 """
 import json
 import os
+import re
 
 from . import attachments as att
+
+
+def _safe_seg(s, maxlen=40):
+    """把任意字符串清洗成能安全当目录名/文件名的一段：去路径分隔符与非法字符、收空白、截断。
+
+    N1 的工作面常是一整句话（含「/」如 使用Excel/用友/金蝶…），直接当目录名会被
+    拆成多层嵌套目录、污染 task_id。这里统一清洗。
+    """
+    s = re.sub(r"[\\/:*?\"<>|]+", " ", str(s))   # 路径分隔符与文件系统非法字符 → 空格
+    s = re.sub(r"\s+", "", s).strip()             # 收掉空白
+    return s[:maxlen] or "task"
 
 # 通用任务 main.py 模板（对所有脚手架任务一致）。仅替换 __TASK_TITLE__。
 MAIN_TEMPLATE = r'''#!/usr/bin/env python3
@@ -264,9 +276,10 @@ def draft_to_spec(occupation, face, draft, idx=0):
     if not isinstance(draft, dict) or not draft.get("prompt") or not draft.get("交付要求"):
         return None
     spec = {
-        "task_id": "auto-%s-%03d" % (occupation, idx),
+        "task_id": "auto-%s-%03d" % (_safe_seg(occupation, 24), idx),
         "领域": occupation,
-        "任务名": str(face)[:40],
+        "任务名": _safe_seg(face),
+        "子域": str(face)[:120],
         "prompt": draft["prompt"],
         "交付要求": draft["交付要求"],
         "附件计划": draft.get("附件计划", []),
@@ -302,9 +315,20 @@ def scaffold_task(spec, tasks_dir):
     """
     domain = spec["领域"]
     name = spec["任务名"]
-    task_dir = os.path.join(tasks_dir, domain, name)
+    task_dir = os.path.join(tasks_dir, _safe_seg(domain, 40), _safe_seg(name, 40))
     deliver = spec.get("交付要求", {})
-    att_plan = spec.get("附件计划", [])
+    # 附件计划可能是文件名字符串列表，也可能是模型给的对象列表
+    # （如 [{"name":"工资表.xlsx","desc":...}]）——统一归一成文件名字符串。
+    def _att_name(x):
+        if isinstance(x, str):
+            return x
+        if isinstance(x, dict):
+            for k in ("name", "文件名", "filename", "file", "名称"):
+                if x.get(k):
+                    return str(x[k])
+            return str(x.get("desc") or x.get("说明") or "附件")
+        return str(x)
+    att_plan = [_att_name(x) for x in spec.get("附件计划", [])]
 
     # N4 造附件：带「附件规格」就先把真实文件落进 assets/input/，落成的相对路径
     # 直接进任务卡的 input 说明；没带则完全走老路（占位符 + todos），行为不变。
@@ -321,7 +345,6 @@ def scaffold_task(spec, tasks_dir):
         "领域": domain,
         "子域": spec.get("子域", ""),
         "任务名": name,
-        "难度层": spec.get("难度层", "L1-基础"),
         "prompt": spec["prompt"],
         "交付要求": deliver,
         "环境": {
@@ -330,26 +353,38 @@ def scaffold_task(spec, tasks_dir):
             "output": "agent 唯一可写目录",
             "reference": "标准答案，仅判分时注入，agent 全程不可见",
         },
+        "priorComplexity": {
+            "steps": 0, "inputDocs": len(input_names), "crossDocJoins": 0,
+            "plantedTraps": 0, "hardStops": 0, "outputFields": len(deliver),
+            "conventionRulings": len(spec.get("conventions", []) or []),
+            "说明": "脚手架自动填的只有可数项（输入份数/交付文件数/口径条数）；steps 等需作者补。先验复杂度不是难度（判分契约 §6.1）。",
+        },
+        "measuredDifficulty": [],
         "evaluation": {
-            "type": "code",
-            "command": "python main.py evaluate --output <output_dir> --reference <reference_dir>",
-            "scheme": "gate-and-score",
-            "tolerance": 0.01,
-            "passThreshold": 1.0,
+            "type": "numeric_tabular",
+            "artifactModes": ["structured_tabular"],
+            "composition": ["gate_and_score"],
+            "locale": "host",
+            "scorer": "main.py（evaluate 子命令，通用逐字段判分）",
+            "passRule": "交付文件齐全 AND 集合/键一致（硬闸门）AND 逐字段全对",
             "hardGates": [
                 "缺任一交付文件 → 0",
                 "CSV 首列行键集合与标准答案不一致（漏报/多报）→ 0",
                 "JSON 缺任一顶层键 → 0",
             ],
-            "partialCredit": "过闸后逐字段比对（JSON 逐叶子 / CSV 逐格 / 文本规范化），score = 正确数 / 总数",
+            "tolerance": {"mode": "absolute", "value": 0.01,
+                          "rationale": "脚手架默认按分位 absolute 比对；作者按实际量纲改成 relative/banded（判分契约 §9.2）。"},
+            "weights": {"说明": "等权，score = 正确字段数 / 总字段数（判分契约 §5）。"},
             "fixtureScores": {
-                "output_test_pos": "1.0（golden：标准答案原样提交）",
-                "output_test_neg": "0.0（neg：破坏第一个交付文件触发硬闸门）",
+                "output_test_pos": {"expected": 1.0, "observed": None},
+                "output_test_neg": {"expected": 0.0, "observed": None},
+                "output_test_random": {"expected": 0.0, "observed": None},
+                "output_test_partial": {"expected": 0.5, "observed": None},
             },
-            "outputContract": "score(0~1) / passed(bool) / errors[] / details[{path,expected,observed,correct}]",
         },
-        "元数据": spec.get("元数据", {"机器规格": "2C4G", "超时秒": 1800, "判分构成": "纯代码"}),
-        "口径来源": spec.get("conventions", []),
+        "元数据": spec.get("元数据", {"机器规格": "2C4G", "超时秒": 1800, "判分构成": "纯代码",
+                                      "schema": "判分契约 v1.0", "待办": "判分器拆独立 scripts/score_outputs.py（§1 纯度，可选）"}),
+        "scoringBasis": [],
     }
 
     todos = []
@@ -368,6 +403,9 @@ def scaffold_task(spec, tasks_dir):
         p = os.path.join(task_dir, "assets", "reference", "expected", fn)
         _write(p, _placeholder(fn))
         todos.append(os.path.relpath(p, tasks_dir))
+
+    todos.append("填 scoringBasis（判分契约 §7：每个判分点标 material/external 出处；空数组不可进库）")
+    todos.append("造 output_test_random/ 与 output_test_partial/ 夹具（判分契约 §4；需先填好标准答案）")
 
     out = {"dir": task_dir, "todos": todos}
     if att_result:
