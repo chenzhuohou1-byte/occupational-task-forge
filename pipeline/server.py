@@ -83,6 +83,44 @@ def _stats_payload():
             "bill_url": cost.BILL_URL}
 
 
+def _latest_qc_map():
+    """取最近一次 runs/*/qc.json 的 task_id→进库，供看板显示真实进库状态（截至上次 qc 跑）。"""
+    root = CFG.runs_dir
+    if not os.path.isdir(root):
+        return {}, None
+    for name in sorted(os.listdir(root), reverse=True):
+        qf = os.path.join(root, name, "qc.json")
+        if os.path.exists(qf):
+            j = json.load(open(qf, encoding="utf-8"))
+            m = {}
+            for r in j.get("结果", []):
+                tid = r.get("task_id") or (r.get("N6") or {}).get("task_id")
+                if tid:
+                    m[tid] = r.get("进库")
+            return m, name
+    return {}, None
+
+
+def _board_payload():
+    """进度看板：每条任务的负责人 / 上次 qc 进库 / N7 两档 / scoringBasis / 夹具档数（全读 task_card，不现跑）。"""
+    qc_map, qc_run = _latest_qc_map()
+    rows = []
+    for t in discover_tasks(CFG.tasks_dir):
+        c = t.card
+        ev = c.get("evaluation", {}) or {}
+        md = [{"model": e.get("model", ""), "fullPassRate": e.get("fullPassRate"),
+               "meanScore": e.get("meanScore")} for e in (c.get("measuredDifficulty") or [])]
+        rows.append({
+            "task_id": t.task_id, "领域": c.get("领域", ""), "任务名": c.get("任务名", ""),
+            "负责人": c.get("负责人") or (c.get("元数据") or {}).get("负责人") or "",
+            "qc进库": qc_map.get(t.task_id),
+            "N7": md,
+            "scoringBasis": len(c.get("scoringBasis") or []),
+            "夹具档数": len(ev.get("fixtureScores") or {}),
+        })
+    return {"qc_run": qc_run, "tasks": rows}
+
+
 def _config_payload():
     """当前 LLM 配置（key 脱敏，只回是否已设置与尾 4 位）。"""
     k = CFG.llm.api_key or ""
@@ -142,6 +180,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, _runs_payload())
         if p.path == "/api/stats":
             return self._send(200, _stats_payload())
+        if p.path == "/api/board":
+            return self._send(200, _board_payload())
         if p.path == "/api/config":
             return self._send(200, _config_payload())
         if p.path == "/api/occupations":
