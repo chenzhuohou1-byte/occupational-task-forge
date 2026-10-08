@@ -121,8 +121,13 @@ export ALE_RUNS_DIR=/path/to/private/runs
 网关价目表（含结算倍率）同理放在不入库的 `pipeline/pricing.local.json`，
 缺这个文件时产线照常跑、所有模型记为「未计价」，不静默按 0。
 
-> ⚠️ **已知缺口**：因为 `tasks/` 为空，clone 下来跑 `qc --all` 会是零条任务。
-> 需要补一条 `tasks/_demo/` 玩具任务作公开样例（`.gitignore` 已为它放行）。
+> **样例任务**：`tasks/_demo/采购清单核算/` 是一条纯合成的玩具任务，clone 下来直接
+> `python3 -m pipeline.cli qc --all` 就能看到它过五道校验（仅演示契约与一条数据的物理形态，**不是有效数据**）。
+> 你自己的私有任务放在仓库外、用 `ALE_TASKS_DIR` 指过去。
+
+> **协作者须知（数据边界）**：数据与密钥一律不入库。clone 后执行一次
+> `git config core.hooksPath .githooks` 启用 pre-commit 钩子——它会拦住误入暂存的
+> `tasks/`（`_demo` 除外）、`runs/`、`.env`、`*.local.json`。
 
 ## 许可与引用
 

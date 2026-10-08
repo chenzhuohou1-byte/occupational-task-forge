@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# 防私有数据/密钥误入公开仓：拦截暂存区里不该公开的路径。
+# 启用：在仓库根执行  git config core.hooksPath .githooks
+# 误报时：git restore --staged <文件> 取消暂存；确需提交可 git commit --no-verify（请三思）。
+set -u
+
+blocked=""
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  case "$f" in
+    tasks/_demo/*) : ;;                       # 玩具演示任务，放行
+    .env|*/.env)        blocked="${blocked}
+  $f  (环境变量/密钥)" ;;
+    *.local.json)       blocked="${blocked}
+  $f  (本地商务配置，如价目表)" ;;
+    runs/*)             blocked="${blocked}
+  $f  (运行产物，含模型分数)" ;;
+    tasks/*)            blocked="${blocked}
+  $f  (私有任务数据)" ;;
+  esac
+done < <(git diff --cached --name-only --diff-filter=AM)
+
+if [ -n "$blocked" ]; then
+  echo "✗ pre-commit 拦截：以下文件不应进入公开仓：${blocked}"
+  echo ""
+  echo "  数据与密钥必须留在仓库外（判分契约配套纪律）。确属误配就修 .gitignore，"
+  echo "  或 git restore --staged <文件> 取消暂存后再提交。"
+  exit 1
+fi
+exit 0

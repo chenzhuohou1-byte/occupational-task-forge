@@ -1,0 +1,57 @@
+{
+  "task_id": "demo-procurement-tally-001",
+  "领域": "_demo",
+  "子域": "演示/数值核算",
+  "任务名": "采购清单核算",
+  "taxonomy": {"大类": "演示", "说明": "纯合成玩具任务，非有效数据，仅演示产线契约与一条数据的物理形态"},
+  "prompt": "你是行政采购岗，收到一张采购清单（input/采购清单.csv，含「商品,数量,单价」三列）。请逐项计算金额并汇总，在 output/ 下交付 核算结果.json。计价规则（本题约定，一律以此为准）：①每项金额 = 数量 × 单价；②总计 = 各项金额之和；③金额一律以元为单位、保留两位小数。",
+  "交付要求": {
+    "核算结果.json": "JSON 对象，顶层两个键：『明细』为对象（键=商品名、值=该项金额），『总计』为各项金额之和。商品名必须与清单完全一致、不得增删。"
+  },
+  "环境": {
+    "input": "只读输入：assets/input/采购清单.csv（4 行商品，纯合成数据）",
+    "software": "无需预装软件，读 csv 即可",
+    "output": "agent 唯一可写目录",
+    "reference": "标准答案 answer.json，仅判分时注入，agent 全程不可见"
+  },
+  "priorComplexity": {
+    "steps": 5, "inputDocs": 1, "crossDocJoins": 0,
+    "plantedTraps": 0, "hardStops": 1, "outputFields": 5, "conventionRulings": 2,
+    "说明": "先验复杂度＝可数出来的量，不是难度。hardStops = 商品集合一致性闸门。"
+  },
+  "measuredDifficulty": [],
+  "evaluation": {
+    "type": "numeric_tabular",
+    "artifactModes": ["structured_tabular"],
+    "composition": ["gate_and_score"],
+    "locale": "host",
+    "scorer": "scripts/score_outputs.py",
+    "passRule": "商品集合与标准答案一致 AND 4 项金额全对 AND 总计正确",
+    "hardGates": [
+      "缺交付文件 核算结果.json → 0",
+      "核算结果.json 非法 JSON 或缺『明细』/『总计』键 → 0",
+      "商品集合与标准答案不一致（漏报 / 多报）→ 0 —— 对齐清单本身是考点，发现不了整题 0 分"
+    ],
+    "tolerance": {
+      "mode": "absolute", "value": 0.01,
+      "rationale": "题面把金额单位钉死到两位小数、正解由输入唯一确定到分位，故按分位 absolute 比对（判分契约 §9.2）。"
+    },
+    "weights": {"说明": "等权。逐值比对（4 项金额 + 总计 = 5 项），score = 正确数 / 5（判分契约 §5）。"},
+    "fixtureScores": {
+      "output_test_pos": {"expected": 1.0, "observed": null},
+      "output_test_neg": {"expected": 0.0, "observed": null},
+      "output_test_random": {"expected": 0.0, "observed": null},
+      "output_test_partial": {"expected": 0.4, "observed": null}
+    }
+  },
+  "元数据": {
+    "作者": "产线自带演示任务",
+    "数据性质": "纯合成，无任何真实或私有内容，可随仓库公开",
+    "备注": "演示用，非有效交付数据；题过于简单，便宜档模型必然满分，按判分契约 §6.3 不入库。"
+  },
+  "scoringBasis": [
+    {"point": "每项金额 = 数量 × 单价", "source": "material", "ref": "task_card.prompt#计价规则①"},
+    {"point": "总计 = 各项金额之和", "source": "material", "ref": "task_card.prompt#计价规则②"}
+  ],
+  "口径来源说明": "全部判分依据来自题面明写的计价规则，无外部事实、无幻觉引用风险（判分契约 §7）。"
+}
