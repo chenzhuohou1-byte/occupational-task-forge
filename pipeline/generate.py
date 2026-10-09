@@ -6,9 +6,15 @@ LLM 节点用 mock 可空跑；N2a 的证据链校验是纯代码、必须真跑
 """
 import json
 import re
+import urllib.error
 import urllib.request
 
 EVIDENCE_COLS = ("数值", "来源URL", "原文引用", "取数日期")
+
+# 不少权威站点（实测 chinatax.gov.cn）对无 User-Agent 的裸请求直接 403，
+# 不带 UA 会把真实存在的页面误判成「不可达」。统一发一个常见浏览器 UA。
+_FETCH_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36")
 
 
 def n1_select(llm, occupation, n=10, cost=None):
@@ -64,10 +70,13 @@ def verify_evidence(rows, fetch=True):
         quote = str(row.get("原文引用", "")).strip()
         if url and fetch and not problems:
             try:
-                html = urllib.request.urlopen(url, timeout=20).read().decode("utf-8", "ignore")
+                req = urllib.request.Request(url, headers={"User-Agent": _FETCH_UA})
+                html = urllib.request.urlopen(req, timeout=20).read().decode("utf-8", "ignore")
                 squeezed = re.sub(r"\s+", "", html)
                 if quote and quote not in html and re.sub(r"\s+", "", quote) not in squeezed:
                     problems.append("原文未包含引用片段")
+            except urllib.error.HTTPError as e:  # 区分 403 反爬 / 404 不存在 / 其他状态码
+                problems.append("URL不可达:HTTP%d" % e.code)
             except Exception as e:  # noqa: BLE001 网络/解析异常统一记为不可达
                 problems.append("URL不可达:" + type(e).__name__)
         rec["_problems"] = problems
