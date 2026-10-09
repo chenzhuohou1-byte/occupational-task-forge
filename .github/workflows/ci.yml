@@ -21,6 +21,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: 装造附件要用的两个三方库
+        # xlsx 走 openpyxl、pdf 走 reportlab（docx 已改成纯标准库、跨平台）。
+        # 产线其余部分零三方依赖：LLM 客户端只用 urllib。
+        run: python3 -m pip install --quiet openpyxl reportlab
       - name: 全仓自测（含对 tasks/_demo 的 qc 闸门行为核对）
         run: python3 tests/run_all.py
       - name: 私有数据不许进公开仓

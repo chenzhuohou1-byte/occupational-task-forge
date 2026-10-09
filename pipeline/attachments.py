@@ -19,9 +19,12 @@ import re
 import sys
 from xml.sax.saxutils import escape as _esc
 
-# kw_* 通用工具目录。产线仓库与工具目录是 ~/Desktop/KW数据产线 下的兄弟目录，
-# 先按这个相对位置找，再看环境变量，最后退回默认路径（仓库搬走时用环境变量兜）。
+# kw_* 写文件底座。**仓内自带一份**（`pipeline/kwtools/`），这样 clone 下来就能造
+# xlsx/pdf/docx/csv —— 原来只在 `~/Desktop/KW数据产线/KW数据构造_通用工具` 这个仓外
+# 目录里找，协作者 clone 完造不出 xlsx/pdf/docx（CI 也当场报了这个错）。
+# 仍保留 KW_TOOLS_DIR 与兄弟目录两条外部路径，且**优先级高于仓内**，便于临时换版本。
 _HERE = os.path.dirname(os.path.abspath(__file__))
+_VENDORED_TOOLS = os.path.join(_HERE, "kwtools")
 _DEFAULT_TOOLS = os.path.expanduser("~/Desktop/KW数据产线/KW数据构造_通用工具")
 _SIBLING_TOOLS = os.path.join(os.path.dirname(os.path.dirname(_HERE)), "KW数据构造_通用工具")
 
@@ -36,11 +39,14 @@ def tools_dir():
     """返回第一个存在的 kw_* 工具目录；一个都没有返回空串。
 
     每次调用都重读环境变量，不在 import 期定死——跑测和换机器时要能临时改指向。
+    顺序：KW_TOOLS_DIR（显式覆盖）→ **仓内自带**（默认，各机器行为一致）→ 兄弟目录 → 旧默认路径。
     """
-    for p in (os.environ.get("KW_TOOLS_DIR", ""), _SIBLING_TOOLS, _DEFAULT_TOOLS):
+    for p in (os.environ.get("KW_TOOLS_DIR", ""), _VENDORED_TOOLS,
+              _SIBLING_TOOLS, _DEFAULT_TOOLS):
         if p and os.path.isdir(p):
             return p
     return ""
+
 
 
 def _tool(name):
