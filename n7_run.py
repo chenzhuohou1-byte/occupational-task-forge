@@ -46,6 +46,25 @@ def resolve_task(cfg, ident):
     sys.exit("找不到任务 %r。可选：\n%s" % (ident, ids))
 
 
+def _trace_base(cfg, task, mode):
+    """每次测量的轨迹目录。默认放在 N7_OUT 旁边的 `<同名>_trace/`，没给 N7_OUT 就
+    放 runs/n7-trace/<task>/<model>-<mode>/。设 N7_NO_TRACE=1 关掉（省磁盘）。
+
+    留轨迹的理由：难度数字是入库门槛的依据，而原来只留 score —— 分数看着不对时
+    既查不到喂了什么、也查不到它交了什么。轨迹含模型表现，**一律不进公开仓**。
+    """
+    if os.environ.get("N7_NO_TRACE") == "1":
+        return ""
+    explicit = os.environ.get("N7_TRACE_DIR")
+    if explicit:
+        return os.path.abspath(explicit)
+    out = os.environ.get("N7_OUT")
+    if out:
+        return os.path.splitext(os.path.abspath(out))[0] + "_trace"
+    return os.path.join(cfg.runs_dir, "n7-trace", task.task_id,
+                        "%s-%s" % (os.environ.get("ALE_LLM_MODEL", "model"), mode))
+
+
 def main():
     selftest = "--selftest" in sys.argv
     cfg = PipelineConfig()
@@ -69,14 +88,16 @@ def main():
 
     runs, errors = [], []
     gap = float(os.environ.get("ALE_LLM_INTER_RUN_SLEEP", "0"))
+    trace_base = _trace_base(cfg, task, mode)
     for i in range(n_runs):
         if i and gap:
             time.sleep(gap)   # 跑间留白，躲限流严的模型（如 gpt-5.5）的突发 429
+        td = os.path.join(trace_base, "run%d" % (i + 1)) if trace_base else None
         try:
             if mode == "agent":
-                _, r = agentsolve.agent_solve(task, client, cost, max_steps)
+                _, r = agentsolve.agent_solve(task, client, cost, max_steps, trace_dir=td)
             else:
-                _, r = qc.n7_blind_solve(task, client, cost)
+                _, r = qc.n7_blind_solve(task, client, cost, trace_dir=td)
             runs.append(r)
             print("  run %d/%d  score=%.4f passed=%s 写出文件=%d%s"
                   % (i + 1, n_runs, r["score"], r["passed"], r["写出文件数"],
@@ -85,6 +106,7 @@ def main():
         except Exception as e:   # 网关 504 / 断流等 = 测量故障，不记成「agent 不会做」
             errors.append("run %d: %s: %s" % (i + 1, type(e).__name__, e))
             print("  run %d/%d  ✗ 测量故障：%s" % (i + 1, n_runs, e), file=sys.stderr)
+
 
 
     n_ok = len(runs)
@@ -114,6 +136,7 @@ def main():
         "_runsRequested": n_runs,
         "_perRun": runs,
         "_errors": errors,
+        "_traceDir": trace_base or "(未留轨迹，N7_NO_TRACE=1)",
         "_costRMB": cost.total(),
         "_unpricedModels": cost.unpriced_models(),
     }

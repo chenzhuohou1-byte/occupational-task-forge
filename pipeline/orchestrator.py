@@ -66,10 +66,19 @@ def qc_batch(tasks, cfg, run_id=None):
                 "N6": n6, "N8": n8, "难度": d}
 
     rows = _map(_qc, tasks, cfg.concurrency, cfg.max_retries)
+    # 逐字段明细单独落盘：夹具分对不上时必须能看到是哪一项判错了，但放进 qc.json
+    # 会把它撑成没法读的大文件（造价一条就有 38 个判分点 × 4 档夹具）。
+    for r in rows:
+        det = (r.get("N6") or {}).pop("_fixtureDetails", None) if isinstance(r, dict) else None
+        if det:
+            p = _dump(cfg, run_id, os.path.join("fixture_details",
+                                                "%s.json" % r["task_id"]), det)
+            r["N6"]["逐字段明细"] = os.path.relpath(p, os.path.join(cfg.runs_dir, run_id))
     passed = sum(1 for r in rows if r.get("进库"))
     summary = {"run_id": run_id, "任务数": len(tasks), "可进库": passed, "结果": rows}
     _dump(cfg, run_id, "qc.json", summary)
     return summary
+
 
 
 

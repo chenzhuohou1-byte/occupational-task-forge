@@ -38,11 +38,15 @@ def _first_action(text):
     return None
 
 
-def agent_solve(task, llm, cost=None, max_steps=20):
+def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None):
     """让模型以 agent 形态做题：多步、可读附件、可分次写交付文件，最后判分。
 
     诚实性同 N7 单发（契约地基）：**不是「不会做」的 0 分一律抛成测量故障** ——
-    一个有效动作都没解析出来（协议噪声）、判分器自己崩了，都算故障。
+    一个有效动作都没解析出来（协议噪声）、步数耗尽却一个文件都没写（预算不够）、
+    判分器自己崩了，都算故障。
+
+    给了 trace_dir 就把完整对话（每一步的提问与回答）、动作序列、产出文件、
+    判分器完整输出落盘；多步任务不留轨迹等于事后无法复盘它在哪一步走偏。
     """
     wd = tempfile.mkdtemp(prefix="ale_n7agent_")
     harness.setup_env(task, wd)
@@ -63,51 +67,60 @@ def agent_solve(task, llm, cost=None, max_steps=20):
     ]
 
     trace, written, bad_steps, valid = [], 0, 0, 0
-    for step in range(max_steps):
-        res = llm.chat(msgs)
-        if cost:
-            cost.add("N7-agent", res)
-        if not res.text.strip() or res.finish_reason == "length":
-            raise RuntimeError(
-                "agent 档第 %d 步无有效产出（finish_reason=%s, reasoning_tokens=%d）"
-                % (step + 1, res.finish_reason, res.reasoning_tokens))
-        msgs.append({"role": "assistant", "content": res.text})
-        act = _first_action(res.text)
-        if not act:
-            bad_steps += 1
-            obs = "动作解析失败：每轮只回一个含 action 字段的 JSON 对象，不要别的文字。"
-        else:
-            valid += 1
-            kind = act.get("action")
-            if kind == "list_files":
-                obs = "input/ 文件清单：\n" + _listing(inputs)
-            elif kind == "read_file":
-                p = str(act.get("path", "")).lstrip("/")
-                p = p[len("input/"):] if p.startswith("input/") else p
-                obs = inputs.get(p) or ("没有这个文件。清单：\n" + _listing(inputs))
-                obs = "%s 的内容：\n%s" % (p, obs)
-            elif kind == "write_file":
-                rel = qc._safe_rel(act.get("path", ""))
-                content = act.get("content")
-                if not rel or not isinstance(content, str):
-                    obs = "write_file 需要 path 与字符串 content。"
-                else:
-                    dst = os.path.join(out_dir, rel)
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    with open(dst, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    written += 1
-                    obs = "已写入 output/%s（%d 字符）。" % (rel, len(content))
-            elif kind == "finish":
-                trace.append({"step": step + 1, "action": "finish"})
-                break
+    try:
+        for step in range(max_steps):
+            res = llm.chat(msgs)
+            if cost:
+                cost.add("N7-agent", res)
+            if not res.text.strip() or res.finish_reason == "length":
+                raise RuntimeError(
+                    "agent 档第 %d 步无有效产出（finish_reason=%s, reasoning_tokens=%d）"
+                    % (step + 1, res.finish_reason, res.reasoning_tokens))
+            msgs.append({"role": "assistant", "content": res.text})
+            act = _first_action(res.text)
+            if not act:
+                bad_steps += 1
+                obs = "动作解析失败：每轮只回一个含 action 字段的 JSON 对象，不要别的文字。"
             else:
-                obs = "不认识的 action=%r，只许 list_files/read_file/write_file/finish。" % kind
-        trace.append({"step": step + 1, "action": (act or {}).get("action", "<解析失败>"),
-                      "path": (act or {}).get("path")})
-        left = max_steps - step - 1
-        msgs.append({"role": "user", "content": "%s\n[还剩 %d 步；步数用完即交卷，"
-                     "务必留足步数把交付文件写出来]" % (obs, left)})
+                valid += 1
+                kind = act.get("action")
+                if kind == "list_files":
+                    obs = "input/ 文件清单：\n" + _listing(inputs)
+                elif kind == "read_file":
+                    p = str(act.get("path", "")).lstrip("/")
+                    p = p[len("input/"):] if p.startswith("input/") else p
+                    obs = inputs.get(p) or ("没有这个文件。清单：\n" + _listing(inputs))
+                    obs = "%s 的内容：\n%s" % (p, obs)
+                elif kind == "write_file":
+                    rel = qc._safe_rel(act.get("path", ""))
+                    content = act.get("content")
+                    if not rel or not isinstance(content, str):
+                        obs = "write_file 需要 path 与字符串 content。"
+                    else:
+                        dst = os.path.join(out_dir, rel)
+                        os.makedirs(os.path.dirname(dst), exist_ok=True)
+                        with open(dst, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        written += 1
+                        obs = "已写入 output/%s（%d 字符）。" % (rel, len(content))
+                elif kind == "finish":
+                    trace.append({"step": step + 1, "action": "finish"})
+                    break
+                else:
+                    obs = ("不认识的 action=%r，只许 list_files/read_file/write_file/finish。"
+                           % kind)
+            trace.append({"step": step + 1, "action": (act or {}).get("action", "<解析失败>"),
+                          "path": (act or {}).get("path")})
+            left = max_steps - step - 1
+            msgs.append({"role": "user", "content": "%s\n[还剩 %d 步；步数用完即交卷，"
+                         "务必留足步数把交付文件写出来]" % (obs, left)})
+    finally:
+        # 不管正常结束还是抛故障都落盘：最该复盘的恰恰是出故障那几次
+        qc._save_trace(trace_dir, transcript=msgs, actions=trace,
+                       meta={"max_steps": max_steps, "有效动作": valid,
+                             "协议噪声步": bad_steps, "write次数": written,
+                             "work_dir": wd})
+
 
     if valid == 0:
         raise RuntimeError("agent 档全程没解析出一个有效动作（%d 步全是协议噪声）" % bad_steps)
@@ -118,12 +131,15 @@ def agent_solve(task, llm, cost=None, max_steps=20):
             "agent 档 %d 步预算耗尽、一个交付文件都没写（光读附件就用完了）：这不是难度，"
             "是预算不够。调大 N7_MAX_STEPS（附件份数 + 交付文件数 + 一半余量）。" % max_steps)
     r = harness.evaluate(task, wd)
+    qc._save_trace(trace_dir, work_dir=wd,
+                   score=dict(r.raw or {}, _score=r.score, _passed=r.passed,
+                              _errors=r.errors, _fault=r.fault))
     if r.fault:
         raise RuntimeError("判分器故障，本跑不计入难度：" + r.fault[:300])
     return True, {"task_id": task.task_id, "score": r.score, "passed": r.passed,
                   "写出文件数": len(os.listdir(out_dir)) if os.path.isdir(out_dir) else 0,
                   "步数": len(trace), "write次数": written, "协议噪声步": bad_steps,
-                  "trace": trace}
+                  "trace": trace, "trace_dir": trace_dir}
 
 
 class _ScriptedClient:

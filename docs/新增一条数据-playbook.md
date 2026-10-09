@@ -55,6 +55,13 @@ ALE_LLM_MODEL=gpt-5.5         ALE_LLM_REASONING_EFFORT=low N7_RUNS=3 N7_TIER=前
   **改过判分器就要同步改 `evaluation.scorerVersion` 并重测**——qc 会拦住「新判分器配旧难度数字」。
 - 想顺便看看这条题在**多步 agent**（能列目录、按需读文件、分次写）手里有多难：给 `N7_MODE=agent`
   （默认 `blind`＝单发盲解）。入库门槛目前以 **blind** 档为准，agent 档是对照用。
+- **每次测量都会留轨迹**（默认开，`N7_NO_TRACE=1` 关）：`<N7_OUT 同名>_trace/runN/` 下有
+  `prompt.txt`（喂进去的完整题面+附件文本）、`response_raw.txt`（模型原始响应）、
+  `output/`（它交的文件）、`score.json`（判分器完整输出，含逐字段 expected/observed）；
+  agent 档另有 `transcript.json`（每一步的问答）与 `actions.json`（动作序列）。
+  **分数看着不对先翻轨迹**，别凭猜改题。测量故障那几次也会留（最该复盘的就是它们）。
+- `qc` 的夹具逐字段明细落在 `runs/<run_id>/fixture_details/<task_id>.json` ——
+  夹具实测分和声明对不上时，看这个就知道是哪一项判错了。
 
 
 ## 8. 分工建议

@@ -6,6 +6,7 @@ N6/N8 是确定性纯代码校验；N7 需要 LLM 当考生。
 import json
 import os
 import re
+import shutil
 import tempfile
 
 from . import harness
@@ -23,8 +24,9 @@ def n6_verify(task, pass_threshold=1.0):
     """
     checks = []
 
-    fx_ok, fx_detail = _check_fixtures(task)
+    fx_ok, fx_detail, fx_fields = _check_fixtures(task)
     checks.append({"检查": "夹具实测==声明", "通过": fx_ok, "明细": fx_detail})
+
 
     wd = tempfile.mkdtemp(prefix="ale_n6_")
     harness.setup_env(task, wd)
@@ -53,7 +55,9 @@ def n6_verify(task, pass_threshold=1.0):
     checks.append({"检查": "题面不泄标准答案", "通过": lk_ok, "明细": lk_detail})
 
     ok = all(c["通过"] for c in checks)
-    return ok, {"task_id": task.task_id, "checks": checks}
+    return ok, {"task_id": task.task_id, "checks": checks,
+                "_fixtureDetails": fx_fields}
+
 
 
 
@@ -151,7 +155,36 @@ def difficulty_gate(task):
 
 
 
-def n7_blind_solve(task, llm, cost=None):
+def _save_trace(trace_dir, work_dir=None, **parts):
+    """落盘一次测量的全部轨迹。判分契约 §6 的数字要可复核，就得留下原始材料。
+
+    原来 N7 只留 score/passed，盲解工作目录是临时目录、路径都没记 —— 一旦某条
+    分数看着不对（比如「便宜档怎么会 0 分」），没有任何东西可查：既不知道喂给
+    模型的是什么，也不知道它到底交了什么、判分器逐字段判成什么。
+    `parts` 里的字符串按文件名写出；work_dir 给了就把它的 output/ 整树拷过来。
+    """
+    if not trace_dir:
+        return None
+    os.makedirs(trace_dir, exist_ok=True)
+    for name, content in parts.items():
+        if content is None:
+            continue
+        is_text = isinstance(content, str)
+        p = os.path.join(trace_dir, name + (".txt" if is_text else ".json"))
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(content if is_text
+                    else json.dumps(content, ensure_ascii=False, indent=2))
+
+    if work_dir:
+        src = os.path.join(work_dir, "output")
+        if os.path.isdir(src):
+            dst = os.path.join(trace_dir, "output")
+            shutil.rmtree(dst, ignore_errors=True)
+            shutil.copytree(src, dst)
+    return trace_dir
+
+
+def n7_blind_solve(task, llm, cost=None, trace_dir=None):
     """N7 盲解：把 prompt+input 交给 LLM 当考生单发试做，产出 output 再判分。
     只给题面与输入、不给 reference。用于估基线通过率、定难度层。
 
@@ -159,6 +192,9 @@ def n7_blind_solve(task, llm, cost=None):
     抛成测量故障**，否则「便宜档 fullPassRate=0 过门槛」会被噪声刷过去、水题进库。
     三类故障：① 附件被截断（题目实际不可解）② 模型没按 JSON 协议交卷（我们自己
     定的单发协议，不是任务要求）③ 判分器自身崩了。
+
+    给了 trace_dir 就把 prompt / 原始响应 / 产出文件 / 判分器完整输出（含逐字段
+    明细）落盘，供事后复核；故障时也落盘，否则最该查的那几次反而什么都没留下。
     """
     wd = tempfile.mkdtemp(prefix="ale_n7_")
     harness.setup_env(task, wd)
@@ -168,14 +204,19 @@ def n7_blind_solve(task, llm, cost=None):
             "附件被截断，盲解看不到完整材料＝题目不可解，这样测出来的难度是假的：%s。"
             "调大 ALE_N7_INPUT_LIMIT，或确认可接受后设 ALE_N7_ALLOW_TRUNCATION=1。"
             % json.dumps(truncated, ensure_ascii=False))
+    prompt = _blind_prompt(task, inputs)
     msgs = [
         {"role": "system", "content": "你是完成真实工作任务的 agent，只依据给定输入作答。"
          "最终必须只输出一个 JSON 对象：键=相对 output/ 的文件名，值=该文件完整文本内容。"},
-        {"role": "user", "content": _blind_prompt(task, inputs)},
+        {"role": "user", "content": prompt},
     ]
     res = llm.chat(msgs)
     if cost:
         cost.add("N7", res)
+    meta = {"model": getattr(res, "model", ""), "finish_reason": res.finish_reason,
+            "prompt_tokens": res.prompt_tokens, "completion_tokens": res.completion_tokens,
+            "reasoning_tokens": res.reasoning_tokens, "work_dir": wd}
+    _save_trace(trace_dir, prompt=prompt, response_raw=res.text, meta=meta)
     # 诚实性闸门①：content 为空、或被 max_tokens 截断（finish_reason=length）＝测量故障，
     # 不是「agent 不会做」。推理型模型会把预算烧在 reasoning_content 上、content 返空。
     if not res.text.strip() or res.finish_reason == "length":
@@ -193,11 +234,16 @@ def n7_blind_solve(task, llm, cost=None):
             "盲解产出解析不出任何文件（模型没按单发 JSON 协议交卷，content 长度 %d）：%s"
             % (len(res.text), res.text.strip()[:300].replace("\n", " ")))
     r = harness.evaluate(task, wd)
+    _save_trace(trace_dir, work_dir=wd,
+                score=dict(r.raw or {}, _score=r.score, _passed=r.passed,
+                           _errors=r.errors, _fault=r.fault))
     # 诚实性闸门③：判分器自己崩了也不是 agent 得 0 分（判分契约 §2）。
     if r.fault:
         raise RuntimeError("判分器故障，本跑不计入难度：" + r.fault[:300])
     return True, {"task_id": task.task_id, "score": r.score,
-                  "passed": r.passed, "写出文件数": n_files}
+                  "passed": r.passed, "写出文件数": n_files,
+                  "trace": trace_dir}
+
 
 
 
@@ -213,15 +259,17 @@ def _check_fixtures(task):
     """跑任务卡声明的每一档夹具，比对实测分与声明分（判分契约 §4）。
 
     没声明 fixtureScores、或声明成描述字符串（ALE 的散文债）→ 直接不通过。
+    顺带把判分器的**逐字段明细**收出来（第三个返回值）：夹具分对不上时，
+    不看逐字段根本不知道是哪一项判错了。
     """
     ev = task.card.get("evaluation")
     if not isinstance(ev, dict):
-        return False, "任务卡 evaluation 不是结构化对象"
+        return False, "任务卡 evaluation 不是结构化对象", {}
     fs = ev.get("fixtureScores")
     if not isinstance(fs, dict) or not fs:
-        return False, "缺 fixtureScores"
+        return False, "缺 fixtureScores", {}
     fixdir = os.path.join(task.dir, "assets", "reference", "fixtures")
-    out, ok_all = [], True
+    out, ok_all, details = [], True, {}
     for name in FIXTURE_ORDER:
         if name not in fs:
             continue
@@ -233,22 +281,26 @@ def _check_fixtures(task):
         exp = float(spec["expected"])
         d = os.path.join(fixdir, name)
         if os.path.isdir(d):
-            got = harness.run_task(task, solver=harness.fixture_solver(name)).score
+            res = harness.run_task(task, solver=harness.fixture_solver(name))
         elif name == "output_test_pos":
-            got = harness.run_task(task, solver=harness.golden_solver).score
+            res = harness.run_task(task, solver=harness.golden_solver)
         elif name == "output_test_neg":
-            got = harness.run_task(task, solver=harness.neg_solver).score
+            res = harness.run_task(task, solver=harness.neg_solver)
         else:
             out.append("%s: 夹具目录不存在" % name)
             ok_all = False
             continue
+        got = res.score
+        details[name] = {"score": got, "passed": res.passed, "errors": res.errors,
+                         "details": res.details}
         hit = abs(got - exp) < 1e-9
         ok_all = ok_all and hit
         out.append("%s: 实测 %s / 声明 %s %s" % (name, got, exp, "" if hit else "← 不符"))
     if len(out) < 4:
         out.append("只有 %d 档夹具，契约 §4 要求四档（定性型五档）" % len(out))
         ok_all = False
-    return ok_all, out
+    return ok_all, out, details
+
 
 
 def _check_independence(task):
