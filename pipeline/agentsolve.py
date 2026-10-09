@@ -105,10 +105,18 @@ def agent_solve(task, llm, cost=None, max_steps=20):
                 obs = "不认识的 action=%r，只许 list_files/read_file/write_file/finish。" % kind
         trace.append({"step": step + 1, "action": (act or {}).get("action", "<解析失败>"),
                       "path": (act or {}).get("path")})
-        msgs.append({"role": "user", "content": obs})
+        left = max_steps - step - 1
+        msgs.append({"role": "user", "content": "%s\n[还剩 %d 步；步数用完即交卷，"
+                     "务必留足步数把交付文件写出来]" % (obs, left)})
 
     if valid == 0:
         raise RuntimeError("agent 档全程没解析出一个有效动作（%d 步全是协议噪声）" % bad_steps)
+    # 步数用完、一个交付文件都没写出来 ＝ **预算不够**，不是不会做（实测：造价 22 份附件，
+    # maxSteps=20 光读文件就用完了）。这种 0 分不作为难度信号，记测量故障、让调用方加预算。
+    if written == 0 and len(trace) >= max_steps:
+        raise RuntimeError(
+            "agent 档 %d 步预算耗尽、一个交付文件都没写（光读附件就用完了）：这不是难度，"
+            "是预算不够。调大 N7_MAX_STEPS（附件份数 + 交付文件数 + 一半余量）。" % max_steps)
     r = harness.evaluate(task, wd)
     if r.fault:
         raise RuntimeError("判分器故障，本跑不计入难度：" + r.fault[:300])
