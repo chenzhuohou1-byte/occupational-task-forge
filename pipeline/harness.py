@@ -20,6 +20,7 @@ class EvalResult:
     details: list = field(default_factory=list)
     errors: list = field(default_factory=list)
     raw: dict = field(default_factory=dict)
+    fault: str = ""   # 判分器自身故障（退出码非 0 / 没吐合法 JSON）；非空时 score 无意义
 
     @property
     def error(self):
@@ -67,6 +68,7 @@ def fixture_solver(name):
 
     夹具是出题人自证义务的载体（判分契约 §4）。N8 地板审计用 output_test_random
     这一档——「文件名/表头/行键/字段全对、数值全错」，这才是有效地板，空解不是。
+    整树拷贝：交付物可能带子目录，只拷顶层文件会把嵌套产物悄悄丢掉、把分数压低。
     """
     def solver(task, work_dir):
         src = os.path.join(task.dir, "assets", "reference", "fixtures", name)
@@ -74,12 +76,26 @@ def fixture_solver(name):
             raise RuntimeError("夹具不存在: " + src)
         dst = os.path.join(work_dir, "output")
         os.makedirs(dst, exist_ok=True)
-        for fn in sorted(os.listdir(src)):
-            s = os.path.join(src, fn)
-            if os.path.isfile(s):
-                shutil.copy(s, os.path.join(dst, fn))
+        for root, _, files in os.walk(src):
+            rel = os.path.relpath(root, src)
+            tgt = dst if rel == "." else os.path.join(dst, rel)
+            os.makedirs(tgt, exist_ok=True)
+            for fn in sorted(files):
+                shutil.copy(os.path.join(root, fn), os.path.join(tgt, fn))
     solver.__name__ = "fixture_solver_" + name
     return solver
+
+
+def synth_floor_solver(task, work_dir):
+    """程序化地板 solver：跑 golden，再把产物原地改写成同结构随机假答案。
+
+    用途见 `pipeline/floor.py` —— 作者自己造的 random 夹具证不了作者自己判分器的
+    清白，这一档由机器从 golden 合成，不经作者之手。
+    """
+    from . import floor
+    golden_solver(task, work_dir)
+    floor.synthesize(os.path.join(work_dir, "output"))
+
 
 
 
@@ -88,7 +104,9 @@ def evaluate(task, work_dir):
 
     契约（判分契约 v1.0 §2）：score / **passed(bool)** / errors[] /
     details[{path,expected,observed,correct}]。
-    判分器退出码非 0 = 判分器自身故障（如标准答案缺失），不是 agent 得 0 分。
+    判分器退出码非 0 = 判分器自身故障（如标准答案缺失），不是 agent 得 0 分：
+    这种情形把 `fault` 填上，调用方（N7）必须记成**测量故障**而不是「agent 不会做」，
+    否则一条判分器坏掉的任务会被静默记成「所有模型都做不出来」＝假难题。
     """
     r = _run([sys.executable, "main.py", "evaluate",
               "--output", os.path.join(work_dir, "output"),
@@ -97,8 +115,8 @@ def evaluate(task, work_dir):
         data = json.loads(r.stdout)
     except json.JSONDecodeError:
         why = ("判分器故障（退出码 %d）：" % r.returncode) if r.returncode else "判分器未输出合法 JSON："
-        return EvalResult(task.task_id, 0.0, False,
-                          errors=[why + (r.stderr or r.stdout)[:800]])
+        detail = why + (r.stderr or r.stdout)[:800]
+        return EvalResult(task.task_id, 0.0, False, errors=[detail], fault=detail)
     return EvalResult(task.task_id, data.get("score", 0.0),
                       bool(data.get("passed", False)),
                       details=data.get("details", []),

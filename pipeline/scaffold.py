@@ -185,15 +185,72 @@ def _eq(a, b):
         return str(a).strip() == str(b).strip()
 
 
+def _row_key(items):
+    """一组同构 dict 的行键：按出场顺序第一个取值两两不同的非空字符串键。"""
+    ds = [x for x in items if isinstance(x, dict)]
+    if not ds:
+        return None
+    keys = [k for k in ds[0] if all(k in d for d in ds[1:])]
+    for k in keys:
+        vals = [d.get(k) for d in ds]
+        if all(isinstance(v, str) and v.strip() for v in vals) and len(set(vals)) == len(vals):
+            return k
+    return None
+
+
+def _align(exp, got, path, errors):
+    """把数组按**行键**对齐再比，而不是按下标比。
+
+    题面从不规定数组顺序，按下标比等于把没约定过的东西计进分数——同一套完全正确
+    的条目换个顺序就大面积扣分。判分契约 §5 的切法是：该有哪些条目＝硬闸门，
+    条目的值才给部分分。行键本身只用于对齐、不计分（否则照抄题面给的名称白送分）。
+    """
+    if isinstance(exp, dict):
+        oe, og = {}, {}
+        for k, v in exp.items():
+            g = got.get(k) if isinstance(got, dict) else None
+            oe[k], og[k] = _align(v, g, "%s/%s" % (path, k), errors)
+        return oe, og
+    if isinstance(exp, list):
+        rk = _row_key(exp)
+        if rk:
+            em = {str(d.get(rk)).strip(): d for d in exp if isinstance(d, dict)}
+            gm = {str(d.get(rk)).strip(): d for d in (got or [])
+                  if isinstance(d, dict) and d.get(rk) is not None}
+            if set(em) != set(gm):
+                errors.append("%s 条目集合不一致（按「%s」对齐；漏报=%s 多报=%s）" % (
+                    path or "数组", rk, sorted(set(em) - set(gm)) or "无",
+                    sorted(set(gm) - set(em)) or "无"))
+                return {}, {}
+            oe, og = {}, {}
+            for k in em:
+                oe[k], og[k] = _align(
+                    {a: b for a, b in em[k].items() if a != rk},
+                    {a: b for a, b in gm[k].items() if a != rk},
+                    "%s[%s]" % (path, k), errors)
+            return oe, og
+        ee = sorted(json.dumps(x, ensure_ascii=False, sort_keys=True) for x in exp)
+        gg = sorted(json.dumps(x, ensure_ascii=False, sort_keys=True)
+                    for x in got) if isinstance(got, list) else []
+        return ({str(i): v for i, v in enumerate(ee)},
+                {str(i): v for i, v in enumerate(gg)})
+    return exp, got
+
+
 def _cmp_json(name, exp, got):
-    fe = _flatten(exp)
-    gg = _flatten(got) if got is not None else {}
+    gate = []
+    ae, ag = _align(exp, got, "", gate)
+    if gate:
+        return 0, 0, [], ["%s %s" % (name, e) for e in gate]
+    fe = _flatten(ae)
+    gg = _flatten(ag)
     details, passed = [], 0
     for k, v in fe.items():
         ok = k in gg and _eq(v, gg[k])
         passed += 1 if ok else 0
         details.append({"path": name + "#" + k, "expected": v, "observed": gg.get(k), "correct": ok})
-    return passed, len(fe), details
+    return passed, len(fe), details, []
+
 
 
 def _key_set_csv(rows):
@@ -279,7 +336,9 @@ def score(output_dir, reference_dir):
     for name in exp_files:
         kind, e, g = parsed[name]
         if kind == "json":
-            p, t, d = _cmp_json(name, e, g)
+            p, t, d, gate = _cmp_json(name, e, g)
+            if gate:   # 条目集合不一致＝硬闸门（该有哪些条目本身就是考点）
+                return _emit(0.0, False, gate, [])
         elif kind == "csv":
             p, t, d = _cmp_csv(name, e, g)
         else:
@@ -401,11 +460,13 @@ def scaffold_task(spec, tasks_dir):
             "composition": ["gate_and_score"],
             "locale": "host",
             "scorer": "scripts/score_outputs.py",
+            "scorerVersion": "1.0",   # 改判分器就改这里：旧 measuredDifficulty 随即作废（§6.2）
             "passRule": "交付文件齐全 AND 集合/键一致（硬闸门）AND 逐字段全对",
             "hardGates": [
                 "缺任一交付文件 → 0",
                 "CSV 首列行键集合与标准答案不一致（漏报/多报）→ 0",
                 "JSON 缺任一顶层键 → 0",
+                "JSON 数组条目集合（按行键）与标准答案不一致 → 0",
             ],
             "tolerance": {"mode": "absolute", "value": 0.01,
                           "rationale": "脚手架默认按分位 absolute 比对；作者按实际量纲改成 relative/banded（判分契约 §9.2）。"},

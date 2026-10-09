@@ -13,7 +13,7 @@ while IFS= read -r f; do
   $f  (环境变量/密钥)" ;;
     *.local.json)       blocked="${blocked}
   $f  (本地商务配置，如价目表)" ;;
-    runs/*)             blocked="${blocked}
+    runs/*|.ci-runs/*)  blocked="${blocked}
   $f  (运行产物，含模型分数)" ;;
     tasks/*)            blocked="${blocked}
   $f  (私有任务数据)" ;;

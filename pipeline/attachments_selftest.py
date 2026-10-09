@@ -300,7 +300,14 @@ def check_wiring(tmp):
     plain["任务名"] = "不带附件规格的任务"
     out2 = scaffold.scaffold_task(plain, tasks_dir)
     assert "附件" not in out2, "没给规格就不该有附件结果"
-    assert len(out2["todos"]) == 2, out2["todos"]
+    # todos = 待填文件（附件占位 + 标准答案占位）+ 固定清单（scoringBasis / 夹具）。
+    # 原来写死 len==2，1008 给 scaffold 加了两条固定清单后这条断言就一直是红的，
+    # 但当时没有 CI、没人跑到——所以这里改成按内容断言，不按条数。
+    files = [t for t in out2["todos"] if t.endswith((".txt", ".json", ".csv", ".md"))]
+    assert len(files) == 2, out2["todos"]
+    assert any("scoringBasis" in t for t in out2["todos"]), out2["todos"]
+    assert any("夹具" in t for t in out2["todos"]), out2["todos"]
+
     p = os.path.join(out2["dir"], "assets/input/人工补的扫描件说明.txt")
     assert "TODO: 填" in open(p, encoding="utf-8").read()
     _ok("不带规格时行为不变：占位符 + %d 条 todos" % len(out2["todos"]))

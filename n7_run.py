@@ -25,7 +25,7 @@ import os
 import sys
 import time
 
-from pipeline import qc, tasks, llm
+from pipeline import agentsolve, qc, tasks, llm
 from pipeline.config import PipelineConfig
 from pipeline.cost import CostTracker
 
@@ -60,6 +60,10 @@ def main():
     n_runs = int(os.environ.get("N7_RUNS", "2" if selftest else "3"))
     task = resolve_task(cfg, os.environ.get("N7_TASK", DEFAULT_TASK))
     tier = os.environ.get("N7_TIER", "").strip()
+    mode = os.environ.get("N7_MODE", "blind").strip()    # blind=单发盲解 / agent=多步带文件工具
+    max_steps = int(os.environ.get("N7_MAX_STEPS", "20"))
+    if mode not in ("blind", "agent"):
+        sys.exit("N7_MODE 只认 blind / agent，给的是 %r" % mode)
     client = llm.get_client(cfg.llm)
     cost = CostTracker()
 
@@ -69,13 +73,19 @@ def main():
         if i and gap:
             time.sleep(gap)   # 跑间留白，躲限流严的模型（如 gpt-5.5）的突发 429
         try:
-            _, r = qc.n7_blind_solve(task, client, cost)
+            if mode == "agent":
+                _, r = agentsolve.agent_solve(task, client, cost, max_steps)
+            else:
+                _, r = qc.n7_blind_solve(task, client, cost)
             runs.append(r)
-            print("  run %d/%d  score=%.4f passed=%s 写出文件=%d"
-                  % (i + 1, n_runs, r["score"], r["passed"], r["写出文件数"]), file=sys.stderr)
+            print("  run %d/%d  score=%.4f passed=%s 写出文件=%d%s"
+                  % (i + 1, n_runs, r["score"], r["passed"], r["写出文件数"],
+                     "  步数=%s 噪声步=%s" % (r.get("步数"), r.get("协议噪声步"))
+                     if mode == "agent" else ""), file=sys.stderr)
         except Exception as e:   # 网关 504 / 断流等 = 测量故障，不记成「agent 不会做」
             errors.append("run %d: %s: %s" % (i + 1, type(e).__name__, e))
             print("  run %d/%d  ✗ 测量故障：%s" % (i + 1, n_runs, e), file=sys.stderr)
+
 
     n_ok = len(runs)
     scores = [r["score"] for r in runs]
@@ -85,8 +95,9 @@ def main():
     # 判分契约 §6.2 形状：model/toolset/budget/scorerVersion/nRuns 必须钉住
     entry = {
         "model": cfg.llm.model,
-        "toolset": "single-shot-blind",       # 单发盲解、无工具；换工具数字不可比（§6.2）
-        "budget": {"maxSteps": 1,
+        # 换工具数字就不可比（§6.2）：单发盲解 vs 多步带文件工具是两种考法
+        "toolset": "single-shot-blind" if mode == "blind" else "agent-file-tools",
+        "budget": {"maxSteps": 1 if mode == "blind" else max_steps,
                    "maxTokens": int(os.environ.get("ALE_LLM_MAX_TOKENS", "16000")),
                    "reasoningEffort": os.environ.get("ALE_LLM_REASONING_EFFORT", "") or None,
                    "wallClockMin": None},
@@ -96,6 +107,7 @@ def main():
         "meanScore": mean_score,
         "measuredAt": datetime.date.today().isoformat(),
     }
+
     report = {
         "task_id": task.task_id,
         "entry": entry,

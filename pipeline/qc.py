@@ -18,6 +18,8 @@ def n6_verify(task, pass_threshold=1.0):
       3) 判分器独立：import 图里没有造附件/生成器模块
       4) 数据已填：assets/ 无 TODO 占位
       5) 判分依据可溯源：scoringBasis 非空
+      6) 判分依据真能追到附件：material 类的 ref 指到的文件在 input 里存在
+      7) 题面不泄标准答案：reference 里的数值不许出现在 prompt / 交付要求里
     """
     checks = []
 
@@ -27,9 +29,11 @@ def n6_verify(task, pass_threshold=1.0):
     wd = tempfile.mkdtemp(prefix="ale_n6_")
     harness.setup_env(task, wd)
     harness.golden_solver(task, wd)
-    s1 = harness.evaluate(task, wd).score
-    s2 = harness.evaluate(task, wd).score
-    checks.append({"检查": "判分可复现", "通过": s1 == s2, "score": [s1, s2]})
+    e1 = harness.evaluate(task, wd)
+    e2 = harness.evaluate(task, wd)
+    repro = e1.score == e2.score and not e1.fault
+    checks.append({"检查": "判分可复现", "通过": repro, "score": [e1.score, e2.score],
+                   **({"判分器故障": e1.fault[:300]} if e1.fault else {})})
 
     ind_ok, ind_why = _check_independence(task)
     checks.append({"检查": "判分器独立(import 图干净)", "通过": ind_ok, "说明": ind_why})
@@ -41,37 +45,129 @@ def n6_verify(task, pass_threshold=1.0):
     checks.append({"检查": "判分依据可溯源(scoringBasis 非空)", "通过": bool(basis),
                    "条数": len(basis) if isinstance(basis, list) else 0})
 
+    tr_ok, tr_detail = _check_basis_traceable(task)
+    checks.append({"检查": "判分依据能追到附件(material.ref 可定位)", "通过": tr_ok,
+                   "明细": tr_detail})
+
+    lk_ok, lk_detail = _check_no_answer_leak(task)
+    checks.append({"检查": "题面不泄标准答案", "通过": lk_ok, "明细": lk_detail})
+
     ok = all(c["通过"] for c in checks)
     return ok, {"task_id": task.task_id, "checks": checks}
+
 
 
 def n8_floor_audit(task, floor=0.0):
     """N8 地板审计（判分契约 §8）：地板＝**同结构随机假答案**，不是空解。
 
     空解得 0 只是最低门槛，挡不住「文件名/表头/行键/字段全对、数值全错」这种白拿分——
-    而那恰恰是结构化表格类任务最常见的漏分口。任务若提供了 output_test_random 夹具就用它；
-    没有则退回空解，并在说明里标注这条地板证据不完整。
+    而那恰恰是结构化表格类任务最常见的漏分口。本节跑**两条地板**、取较高分：
+      ① 作者提供的 `output_test_random` 夹具（作者自证义务，判分契约 §4）
+      ② **程序化合成**的同结构假答案（`pipeline/floor.py` 从 golden 机械改写）
+    之所以要②：作者造的地板证不了作者自己判分器的清白。「行键列被计进分母、
+    照抄题面清单白拿约一成」这个缺陷在两条数据上各出现一次、两次都靠人工发现。
     """
+    probes = []
+
     fx = os.path.join(task.dir, "assets", "reference", "fixtures", "output_test_random")
     if os.path.isdir(fx):
-        r = harness.run_task(task, solver=harness.fixture_solver("output_test_random"))
-        kind, note = "同结构随机假答案", "地板正常"
+        probes.append(("作者random夹具",
+                       harness.run_task(task, solver=harness.fixture_solver(
+                           "output_test_random")).score))
     else:
-        r = harness.run_task(task, solver=harness.empty_solver)
-        kind, note = "空解", "地板正常（但缺 output_test_random 夹具，这条地板证据不完整）"
-    ok = r.score <= floor
-    return ok, {"task_id": task.task_id, "floor_score": r.score, "地板类型": kind,
-                "通过": ok,
-                "说明": note if ok else "%s 得分过高：判分器白送分，需修" % kind}
+        probes.append(("空解(缺random夹具,证据不完整)",
+                       harness.run_task(task, solver=harness.empty_solver).score))
+
+    try:
+        probes.append(("程序化合成假答案",
+                       harness.run_task(task, solver=harness.synth_floor_solver).score))
+    except Exception as e:  # noqa: BLE001 合成地板跑不起来要显式记下，不能静默跳过
+        probes.append(("程序化合成假答案(未能运行:%s)" % type(e).__name__, None))
+
+    scored = [(k, v) for k, v in probes if isinstance(v, (int, float))]
+    worst_kind, worst = max(scored, key=lambda kv: kv[1])
+    ok = worst <= floor and len(scored) == len(probes)
+    detail = {"task_id": task.task_id, "floor_score": worst, "地板类型": worst_kind,
+              "各档地板": {k: v for k, v in probes}, "通过": ok}
+    if worst > floor:
+        detail["说明"] = "%s 得分 %.4f 过高：判分器白送分，需修（结构对、值全错也该是 0）" % (
+            worst_kind, worst)
+    elif len(scored) != len(probes):
+        detail["说明"] = "地板证据不完整：有探针没跑起来"
+    else:
+        detail["说明"] = "两档地板都为 0，判分器不给「格式对内容错」送分"
+    return ok, detail
+
+
+def difficulty_gate(task):
+    """§6.3 入库门槛（难度）—— 原来 qc 的「进库」只查 N6/N8，难度靠人手动确认。
+
+    4 条数据时手动还行，几个人同时铺量就一定会把「进库=True」当成「这条合格」，
+    于是便宜模型能满分的水题混进来。这里按契约 §6.3 程序化判：
+      便宜档 glm-5.3-flash  nRuns≥3  fullPassRate 必须 = 0
+      前沿档 GPT-5.5        nRuns≥3  fullPassRate ≤ 1/3
+    未测 → 不通过（显式写「难度未测」，不是默默算过）。
+    另外**判分器版本必须对得上**：改了判分器就等于换了考试，旧难度数字不再算数
+    （契约 §6.2 把 scorerVersion 钉进测量条目正是为此）。
+    """
+    tiers = (("便宜档", "glm-5.3-flash", lambda r: r == 0, "必须 = 0"),
+             ("前沿档", "gpt-5.5", lambda r: r <= 1.0 / 3 + 1e-9, "≤ 1/3"))
+    md = task.card.get("measuredDifficulty")
+    if not isinstance(md, list) or not md:
+        return False, {"task_id": task.task_id, "通过": False,
+                       "说明": "难度未测（measuredDifficulty 为空）——未测 ≠ 达标"}
+    cur_ver = str(((task.card.get("evaluation") or {}).get("scorerVersion") or "")).strip()
+    if not cur_ver:
+        return False, {"task_id": task.task_id, "通过": False,
+                       "说明": "evaluation.scorerVersion 未声明：无法判断难度数字是不是"
+                               "当前判分器测的（契约 §6.2）"}
+    rows, ok_all = [], True
+    for tier, model, rule, desc in tiers:
+        hit = [e for e in md if str(e.get("model", "")).lower() == model
+               and str(e.get("scorerVersion", "")).strip() == cur_ver]
+        if not hit:
+            stale = [e for e in md if str(e.get("model", "")).lower() == model]
+            rows.append({"档": tier, "基准模型": model, "通过": False,
+                         "说明": "判分器已改版(当前 %s)，旧测量 scorerVersion=%s 不再算数，需重测"
+                                 % (cur_ver, [e.get("scorerVersion") for e in stale])
+                                 if stale else "未测"})
+            ok_all = False
+            continue
+        e = sorted(hit, key=lambda x: str(x.get("measuredAt", "")))[-1]  # 取最近一次
+        fpr, n = e.get("fullPassRate"), e.get("nRuns") or 0
+        miss = [k for k in ("model", "toolset", "budget", "scorerVersion", "nRuns")
+                if not e.get(k)]
+        ok = isinstance(fpr, (int, float)) and rule(fpr) and n >= 3 and not miss
+        rows.append({"档": tier, "基准模型": model, "fullPassRate": fpr, "nRuns": n,
+                     "meanScore": e.get("meanScore"), "toolset": e.get("toolset"),
+                     "scorerVersion": e.get("scorerVersion"), "门槛": desc, "通过": ok,
+                     **({"缺字段": miss} if miss else {}),
+                     **({} if n >= 3 else {"说明": "nRuns<3，契约 §6.3 要求 3 跑"})})
+        ok_all = ok_all and ok
+    return ok_all, {"task_id": task.task_id, "通过": ok_all, "判分器版本": cur_ver,
+                    "各档": rows}
+
+
 
 
 
 def n7_blind_solve(task, llm, cost=None):
     """N7 盲解：把 prompt+input 交给 LLM 当考生单发试做，产出 output 再判分。
-    只给题面与输入、不给 reference。用于估基线通过率、定难度层。"""
+    只给题面与输入、不给 reference。用于估基线通过率、定难度层。
+
+    ★ 本节的诚实性是整条难度门槛的地基：**任何「不是 agent 不会做」的 0 分都必须
+    抛成测量故障**，否则「便宜档 fullPassRate=0 过门槛」会被噪声刷过去、水题进库。
+    三类故障：① 附件被截断（题目实际不可解）② 模型没按 JSON 协议交卷（我们自己
+    定的单发协议，不是任务要求）③ 判分器自身崩了。
+    """
     wd = tempfile.mkdtemp(prefix="ale_n7_")
     harness.setup_env(task, wd)
-    inputs = _read_inputs(os.path.join(wd, "input"))
+    inputs, truncated = _read_inputs(os.path.join(wd, "input"))
+    if truncated and os.environ.get("ALE_N7_ALLOW_TRUNCATION", "") != "1":
+        raise RuntimeError(
+            "附件被截断，盲解看不到完整材料＝题目不可解，这样测出来的难度是假的：%s。"
+            "调大 ALE_N7_INPUT_LIMIT，或确认可接受后设 ALE_N7_ALLOW_TRUNCATION=1。"
+            % json.dumps(truncated, ensure_ascii=False))
     msgs = [
         {"role": "system", "content": "你是完成真实工作任务的 agent，只依据给定输入作答。"
          "最终必须只输出一个 JSON 对象：键=相对 output/ 的文件名，值=该文件完整文本内容。"},
@@ -80,9 +176,8 @@ def n7_blind_solve(task, llm, cost=None):
     res = llm.chat(msgs)
     if cost:
         cost.add("N7", res)
-    # 诚实性闸门：content 为空、或被 max_tokens 截断（finish_reason=length）＝测量故障，
-    # 不是「agent 不会做」。推理型模型会把预算烧在 reasoning_content 上、content 返空，
-    # 若静默当 0 分，便宜档会假装「fullPassRate=0 过门槛」。必须抛出、由调用方记成故障。
+    # 诚实性闸门①：content 为空、或被 max_tokens 截断（finish_reason=length）＝测量故障，
+    # 不是「agent 不会做」。推理型模型会把预算烧在 reasoning_content 上、content 返空。
     if not res.text.strip() or res.finish_reason == "length":
         raise RuntimeError(
             "盲解无有效产出（疑似推理占满预算或超时截断）：finish_reason=%s, "
@@ -90,9 +185,20 @@ def n7_blind_solve(task, llm, cost=None):
             "换直答型模型或调大 ALE_LLM_MAX_TOKENS（注意过大可能触发网关生成超时）。"
             % (res.finish_reason, res.completion_tokens, res.reasoning_tokens, len(res.text)))
     n_files = _materialize(res.text, os.path.join(wd, "output"))
+    # 诚实性闸门②：一个文件都没落盘＝模型没按单发 JSON 协议交卷（散文、围栏外夹字、
+    # 半截 JSON）。这是**我们自己这套协议的格式噪声**，不是专业能力，必须记故障。
+    # 实测便宜档曾有 2/3 跑挂在这里，若静默记 0 分，水题会假装过门槛。
+    if n_files == 0:
+        raise RuntimeError(
+            "盲解产出解析不出任何文件（模型没按单发 JSON 协议交卷，content 长度 %d）：%s"
+            % (len(res.text), res.text.strip()[:300].replace("\n", " ")))
     r = harness.evaluate(task, wd)
+    # 诚实性闸门③：判分器自己崩了也不是 agent 得 0 分（判分契约 §2）。
+    if r.fault:
+        raise RuntimeError("判分器故障，本跑不计入难度：" + r.fault[:300])
     return True, {"task_id": task.task_id, "score": r.score,
                   "passed": r.passed, "写出文件数": n_files}
+
 
 
 # ---------------- helpers ----------------
@@ -172,6 +278,120 @@ def _check_independence(task):
         os.path.basename(p) for p in cand if os.path.isfile(p))
 
 
+# ref 里的文件名 token：一直吃到扩展名为止，只在空白/逗号/加号/井号处断开。
+# 注意不能把全角括号当分隔符——真实附件名里就有「施工合同专用条款（摘录）.docx」。
+_REF_FILE_RE = re.compile(
+    r"[^\s,，+#]+\.(?:xlsx|xls|csv|docx|doc|pdf|md|txt|json)", re.I)
+
+
+
+def _input_basenames(task):
+    d = os.path.join(task.dir, "assets", "input")
+    out = set()
+    for root, _, files in os.walk(d):
+        for f in files:
+            out.add(f.lower())
+    return out
+
+
+def _check_basis_traceable(task):
+    """判分依据真能追到地方（判分契约 §7 核心纪律的机械化）。
+
+    原来只查 scoringBasis 非空——那挡不住「ref 只写个文件名/写个查不到的出处」，
+    0917 审出的高频病「核心依据只写文件名」会原样复发。这里按 source 分别查：
+      material → ref 里至少有一个文件名能在 assets/input 下找到（或显式写「题面」）
+      external → ref 必须是可点开的 http(s) 链接（证据链本身由 N2a 机械核验）
+    """
+    basis = task.card.get("scoringBasis")
+    if not isinstance(basis, list) or not basis:
+        return False, ["scoringBasis 为空"]
+    names = _input_basenames(task)
+    bad = []
+    for i, e in enumerate(basis):
+        if not isinstance(e, dict):
+            bad.append("第%d条不是对象" % (i + 1))
+            continue
+        src, ref = str(e.get("source", "")), str(e.get("ref", "")).strip()
+        if not ref:
+            bad.append("第%d条 ref 为空" % (i + 1))
+        elif src == "material":
+            toks = [os.path.basename(t).lower() for t in _REF_FILE_RE.findall(ref)]
+            # 判分依据也可以直接出自题面（契约 §7 的「题面材料里明写的约定规则」），
+            # 这类 ref 写成「题面 …」或「task_card.prompt …」，不该被当成指不到附件。
+            from_prompt = "题面" in ref or "prompt" in ref.lower()
+            if not any(t in names for t in toks) and not from_prompt:
+                bad.append("第%d条 ref 指不到任何 input 附件、也没说是题面：%s" % (i + 1, ref[:80]))
+
+        elif src == "external":
+            if "http" not in ref:
+                bad.append("第%d条 source=external 但 ref 不是链接：%s" % (i + 1, ref[:80]))
+        else:
+            bad.append("第%d条 source 非法（只许 material / external）：%r" % (i + 1, src))
+    if bad:
+        return False, bad
+    return True, ["%d 条依据全部可定位" % len(basis)]
+
+
+def _gold_numbers(task, lo=1000.0):
+    """标准答案里的「有辨识度的数」：|v|≥lo。夹具目录排除（夹具本就是答案的变体）。"""
+    ref = os.path.join(task.dir, "assets", "reference")
+    out = set()
+    for root, _, files in os.walk(ref):
+        if "fixtures" in root.split(os.sep):
+            continue
+        for f in files:
+            try:
+                text = open(os.path.join(root, f), encoding="utf-8", errors="ignore").read()
+            except OSError:
+                continue
+            for m in re.findall(r"-?\d[\d,]*\.?\d*", text):
+                try:
+                    v = float(m.replace(",", ""))
+                except ValueError:
+                    continue
+                if abs(v) >= lo and not (1900 <= v <= 2100):
+                    out.add(v)
+    return out
+
+
+def _check_no_answer_leak(task):
+    """题面不许印标准答案（harbor 的旧伤：示例块抄了真数值，照抄即满分）。
+
+    判定口径：出现在 reference 里、又出现在 prompt / 交付要求里、且**不在 input 附件里**
+    的数 —— 在附件里的数是给定材料，题面复述它不是泄答案。
+    白名单：`元数据.题面允许数值`（显式声明，带理由）。
+    """
+    gold = _gold_numbers(task)
+    if not gold:
+        return True, ["标准答案里没有 ≥1000 的数，本检查不适用"]
+    seen_in_input = set()
+    try:
+        wd = tempfile.mkdtemp(prefix="ale_leak_")
+        harness.setup_env(task, wd)
+        inputs, _ = _read_inputs(os.path.join(wd, "input"), limit=10 ** 9)
+        itext = "\n".join(inputs.values()).replace(",", "")
+        for g in gold:
+            if re.search(r"(?<![\d.])%s(?![\d])" % re.escape("%g" % g), itext):
+                seen_in_input.add(g)
+    except Exception:  # noqa: BLE001 读不出附件就不做排除，宁可多报不漏报
+        seen_in_input = set()
+    allow = set()
+    for v in (task.card.get("元数据") or {}).get("题面允许数值") or []:
+        try:
+            allow.add(float(v))
+        except (TypeError, ValueError):
+            pass
+    ptext = (json.dumps(task.card.get("prompt", ""), ensure_ascii=False)
+             + json.dumps(task.card.get("交付要求", {}), ensure_ascii=False)).replace(",", "")
+    hits = sorted(g for g in gold - seen_in_input - allow
+                  if re.search(r"(?<![\d.])%s(?![\d])" % re.escape("%g" % g), ptext))
+    if hits:
+        return False, ["题面出现了标准答案里的数（照抄即得分）：%s" % hits[:12],
+                       "若确属题面必须给出的已知量，写进 元数据.题面允许数值 并注明理由"]
+    return True, ["gold 大数 %d 个，题面命中 0 个（附件内已给的数 %d 个不计）"
+                  % (len(gold), len(seen_in_input))]
+
+
 def _has_placeholder(root):
 
     """扫描 assets/ 是否残留脚手架占位符——用于识别"骨架已建但数据未填"的任务。"""
@@ -227,14 +447,17 @@ def _pdf_text(path):
     return "\n".join(p.extract_text() or "" for p in pypdf.PdfReader(path).pages)
 
 
-def _read_inputs(input_dir, limit=8000):
+def _read_inputs(input_dir, limit=None):
     """把 input/ 文件读成文本喂给盲解 agent：xlsx→制表符表格、docx/pdf→段落文本，其余按文本读。
 
     整树遍历：真实附件带目录分层，键用相对路径，agent 才知道文件在哪一层。
+    返回 (内容字典, 被截断的文件清单)——**截断必须被看见**：附件被悄悄砍掉一半，
+    题目就变成不可解，而盲解分数会低得像「这题很难」，难度测量从此失真。
     """
-    out = {}
+    limit = int(os.environ.get("ALE_N7_INPUT_LIMIT", 8000)) if limit is None else limit
+    out, truncated = {}, []
     if not os.path.isdir(input_dir):
-        return out
+        return out, truncated
     paths = []
     for root, dirs, files in os.walk(input_dir):
         dirs.sort()
@@ -245,16 +468,22 @@ def _read_inputs(input_dir, limit=8000):
         ext = name.lower().rsplit(".", 1)[-1] if "." in os.path.basename(name) else ""
         try:
             if ext == "xlsx":
-                out[name] = _xlsx_text(p)[:limit]
+                text = _xlsx_text(p)
             elif ext == "docx":
-                out[name] = _docx_text(p)[:limit]
+                text = _docx_text(p)
             elif ext == "pdf":
-                out[name] = _pdf_text(p)[:limit]
+                text = _pdf_text(p)
             else:
-                out[name] = open(p, encoding="utf-8", errors="ignore").read()[:limit]
+                text = open(p, encoding="utf-8", errors="ignore").read()
         except Exception as e:  # noqa: BLE001 读取失败不阻断盲解
             out[name] = "[无法读取 %s：%s]" % (name, type(e).__name__)
-    return out
+            continue
+        if len(text) > limit:
+            truncated.append({"file": name, "原长": len(text), "上限": limit})
+            text = text[:limit]
+        out[name] = text
+    return out, truncated
+
 
 
 def _blind_prompt(task, inputs):
@@ -308,6 +537,20 @@ def _extract_json_obj(text):
     return None
 
 
+def _safe_rel(name):
+    """把模型给的文件名收敛成 output/ 内的安全相对路径。
+
+    保留子目录（交付物可能分层，原来一律取 basename 会把 `报告/明细.csv` 拍平成
+    `明细.csv`、判分器找不到就记成做错了）；同时剥掉模型爱加的 `output/` 前缀，
+    并挡掉 `..`、绝对路径这类越界写。
+    """
+    parts = [p for p in str(name).replace("\\", "/").strip().split("/")
+             if p not in ("", ".", "..")]
+    if parts and parts[0] == "output":
+        parts = parts[1:]
+    return os.path.join(*parts) if parts else ""
+
+
 def _materialize(text, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     files = _extract_json_obj(text)
@@ -317,8 +560,13 @@ def _materialize(text, output_dir):
     for name, content in files.items():
         if not isinstance(content, str):
             content = json.dumps(content, ensure_ascii=False)
-        dst = os.path.join(output_dir, os.path.basename(name))
+        rel = _safe_rel(name)
+        if not rel:
+            continue
+        dst = os.path.join(output_dir, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
         with open(dst, "w", encoding="utf-8") as f:
             f.write(content)
         n += 1
     return n
+

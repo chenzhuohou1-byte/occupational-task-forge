@@ -1,0 +1,38 @@
+name: CI
+
+# 公开仓 + 强制 PR 评审，但评审全靠人眼读——1008 那三个「前半链路从没跑过」的
+# 潜伏 bug 就是这么积累的。这里把不花钱、不触网的自测挂到每次 push / PR 上。
+# 刻意不跑任何需要 LLM / 网关 / 私有数据的东西：CI 里没有 .env、没有 tasks/ 真数据。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]   # 3.9 = 开发机自带版本，别让语法越界
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 全仓自测（含对 tasks/_demo 的 qc 闸门行为核对）
+        run: python3 tests/run_all.py
+      - name: 私有数据不许进公开仓
+        run: |
+          set -e
+          # 与 .githooks/pre-commit 同一条红线，防有人绕过本地钩子。
+          # core.quotepath=false：不然中文路径被转义成 "\351\207..."、grep 对不上。
+          ls_files() { git -c core.quotepath=false ls-files "$@"; }
+          if ls_files | grep -E '^(runs/|\.env$|.*\.local\.json$)' ; then
+            echo "✗ 上面这些文件不该入库（数据/密钥/内部价目）"; exit 1
+          fi
+          if ls_files tasks/ | grep -v '^tasks/_demo/' | grep . ; then
+            echo "✗ tasks/ 下只许有 _demo 玩具任务，真实数据走私有数据仓"; exit 1
+          fi
+          echo "✓ 信息边界 OK"

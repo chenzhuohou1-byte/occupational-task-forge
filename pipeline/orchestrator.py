@@ -49,19 +49,28 @@ def _dump(cfg, run_id, name, payload):
 
 
 def qc_batch(tasks, cfg, run_id=None):
+    """批量 QC。**「进库」= N6 ∧ N8 ∧ §6.3 难度门槛**。
+
+    难度那一项原来不在程序里、靠人看着 measuredDifficulty 手动确认——4 条数据时
+    还行，几个人同时铺量就一定会被当成「进库=True 即合格」，于是便宜模型能满分的
+    水题混进来。现在三项齐备才算进库。
+    """
     run_id = run_id or _run_id()
 
     def _qc(task):
         n6_ok, n6 = qc.n6_verify(task, cfg.pass_threshold)
         n8_ok, n8 = qc.n8_floor_audit(task, cfg.floor)
+        d_ok, d = qc.difficulty_gate(task)
         return {"task_id": task.task_id, "N6通过": n6_ok, "N8通过": n8_ok,
-                "进库": n6_ok and n8_ok, "N6": n6, "N8": n8}
+                "难度门槛通过": d_ok, "进库": n6_ok and n8_ok and d_ok,
+                "N6": n6, "N8": n8, "难度": d}
 
     rows = _map(_qc, tasks, cfg.concurrency, cfg.max_retries)
     passed = sum(1 for r in rows if r.get("进库"))
     summary = {"run_id": run_id, "任务数": len(tasks), "可进库": passed, "结果": rows}
     _dump(cfg, run_id, "qc.json", summary)
     return summary
+
 
 
 def blind_batch(tasks, llm, cfg, run_id=None):
