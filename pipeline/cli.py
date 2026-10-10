@@ -67,12 +67,14 @@ def main(argv=None):
     pc.add_argument("--tol", type=float, default=1e-6, help="全局 absolute 容差，可被 容差.json 覆盖")
 
     pg = sub.add_parser("build-case", help="生成半段：模型产闭世界案例 → crosscheck → 物化 → qc")
-    pg.add_argument("--occupation", required=True)
+    pg.add_argument("--occupation", help="职业；--resume 时可省（从旧 report.json 读）")
     pg.add_argument("--out", help="产出目录（默认 ALE_RUNS_DIR/casegen/<职业>-<时间>，不入公开仓）")
+    pg.add_argument("--resume", help="续跑某个产出目录：已有的 规则/代码/solve2 直接复用，不重复花钱")
     pg.add_argument("--solve-model", default="gpt-5.5")
     pg.add_argument("--solve2-model", default="glm-5.3-flash")
     pg.add_argument("--rounds", type=int, default=3, help="返修预算：最多几轮，仍不过即作废")
     pg.add_argument("--n", type=int, default=200, help="crosscheck 世界数")
+    pg.add_argument("--call-gap", type=float, default=30.0, help="同一模型两次调用的最小间隔秒数（防 429）")
 
     args = ap.parse_args(argv)
 
@@ -129,7 +131,8 @@ def main(argv=None):
     if args.cmd == "build-case":
         from . import casegen_build
         return casegen_build.run_build(args.occupation, args.out, args.solve_model,
-                                       args.solve2_model, args.rounds, args.n)
+                                       args.solve2_model, args.rounds, args.n,
+                                       resume=args.resume, call_gap=args.call_gap)
 
     return 0
 

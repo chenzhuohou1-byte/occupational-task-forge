@@ -93,10 +93,29 @@ def _make_fixtures(task_dir):
     _copy_expected(exp, os.path.join(fixroot, "output_test_partial"))
     _perturb_partial(os.path.join(fixroot, "output_test_partial"))
     t = tasks.load_task(task_dir)
-    obs = {}
+    obs, det = {}, {}
     for name in ("output_test_pos", "output_test_neg", "output_test_random", "output_test_partial"):
-        obs[name] = harness.run_task(t, solver=harness.fixture_solver(name)).score
-    return obs
+        r = harness.run_task(t, solver=harness.fixture_solver(name))
+        obs[name], det[name] = r.score, r
+    return obs, det
+
+
+class FixtureMismatch(RuntimeError):
+    """夹具实测不符预期。.bad 是不符的档名；.info 带逐字段线索（地板在哪些字段拿了分 / 正例错在哪）。
+
+    neg/random 不符多半是**框架侧**（判分器或地板合成器）的问题，案例返修修不好；
+    pos/partial 不符多半是案例侧（交付格式、物化渲染）的问题，可以返修。
+    """
+
+    FRAMEWORK_SIDE = ("output_test_neg", "output_test_random")
+
+    def __init__(self, msg, bad, info):
+        super().__init__(msg)
+        self.bad, self.info = bad, info
+
+    @property
+    def framework_side(self):
+        return any(b in self.FRAMEWORK_SIDE for b in self.bad)
 
 
 def materialize(case_dir, out_root, seed=0):
@@ -132,16 +151,26 @@ def materialize(case_dir, out_root, seed=0):
         with open(os.path.join(expdir, fn), "w", encoding="utf-8") as f:
             f.write(text)
 
-    obs = _make_fixtures(task_dir)
-    bad = []
+    obs, det = _make_fixtures(task_dir)
+    bad, msgs = [], []
     for name, want in (("output_test_pos", 1.0), ("output_test_neg", 0.0),
                        ("output_test_random", 0.0)):
         if abs(obs[name] - want) > 1e-9:
-            bad.append("%s 实测 %s ≠ 期望 %s" % (name, obs[name], want))
+            bad.append(name)
+            msgs.append("%s 实测 %s ≠ 期望 %s" % (name, obs[name], want))
     if not (0.0 < obs["output_test_partial"] < 1.0):
-        bad.append("output_test_partial 实测 %s 不在 (0,1)" % obs["output_test_partial"])
+        bad.append("output_test_partial")
+        msgs.append("output_test_partial 实测 %s 不在 (0,1)" % obs["output_test_partial"])
     if bad:
-        raise RuntimeError("物化出的夹具不符预期（判分器或物化逻辑有问题）：" + "；".join(bad))
+        info = {}
+        for name in bad:
+            r = det[name]
+            # 地板/负例要看「白拿分的字段」，正例/部分分要看「判错的字段」
+            want_correct = name in FixtureMismatch.FRAMEWORK_SIDE
+            hit = [d for d in (r.details or []) if bool(d.get("correct")) == want_correct]
+            info[name] = {"score": r.score, "errors": r.errors,
+                          ("白拿分的字段" if want_correct else "判错的字段"): hit[:12]}
+        raise FixtureMismatch("物化出的夹具不符预期：" + "；".join(msgs), bad, info)
 
     # 回填 task_card：fixtureScores(observed=期望)、scoringBasis、priorComplexity
     card_path = os.path.join(task_dir, "task_card.json")

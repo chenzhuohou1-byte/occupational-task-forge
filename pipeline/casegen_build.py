@@ -7,7 +7,9 @@
 
 每轮：冒烟门 → crosscheck → 物化 → qc(N6/N8)；任一不过就把问题喂回 solve 侧模型返修，
 规则改了就重产 solve2；最多 max_rounds 轮，仍不过 → CaseRejected（CLI 退出码 1，绝不先放行）。
-每次模型调用的 prompt / 原始响应落盘到 <out>/trace/。
+不是案例的错的失败单独归类、不浪费返修：网关故障 → InfraError，判分器/地板合成器的问题 →
+FrameworkError（CLI 退出码都是 3）。--resume 复用已产出的文件续跑，不重复花钱。
+每次模型调用的 prompt / 原始响应落盘到 <out>/trace/；进度打到 stderr。
 """
 import dataclasses
 import inspect
@@ -31,6 +33,18 @@ _FENCE_RE = re.compile(r"^\s*```[^\n]*\n(.*?)\n?```\s*$", re.S)
 
 class CaseRejected(Exception):
     """返修预算用完（或 producer 不能返修）仍不过 → 作废。args[0] 是报告 dict。"""
+
+
+class InfraError(Exception):
+    """网关/网络故障（429、超时、5xx…）：不是案例的错，不记作废、不消耗返修。args[0] 是报告 dict。"""
+
+
+class FrameworkError(Exception):
+    """判分器或地板合成器的问题（如地板在某些字段白拿分）：案例返修修不好，直接停下报出。"""
+
+
+def _stderr_log(msg):
+    print("[casegen %s] %s" % (time.strftime("%H:%M:%S"), msg), file=sys.stderr, flush=True)
 
 
 def _read(path):
@@ -106,44 +120,82 @@ def _check_round(case_dir, out_dir, rnd, n, seed):
             ensure_ascii=False, indent=1, default=str)[:4000], None
     try:
         mat = casegen.materialize(case_dir, os.path.join(out_dir, "tasks_r%d" % rnd))
-    except Exception:  # noqa: BLE001 物化失败（夹具不符/渲染出错）也是返修线索
+    except casegen.FixtureMismatch as e:
+        # 负例/地板不符 → 判分器或地板合成器的锅（框架侧），返修案例没用；正例/部分分不符 → 案例侧
+        return ("framework" if e.framework_side else "materialize"), "%s\n逐字段线索：\n%s" % (
+            e, json.dumps(e.info, ensure_ascii=False, indent=1, default=str)[:3500]), None
+    except Exception:  # noqa: BLE001 物化失败（渲染出错等）也是返修线索
         return "materialize", "物化失败：\n" + traceback.format_exc(limit=6), None
     t = tasks.load_task(mat["dir"])
     n6_ok, n6 = qc.n6_verify(t)
     n8_ok, n8 = qc.n8_floor_audit(t)
     if not (n6_ok and n8_ok):
-        return "qc", "qc 不过：\n" + json.dumps(
+        # N6 不过（泄答案/依据追不到附件…）是案例侧；只有 N8 地板不过 → 框架侧
+        stage = "qc" if not n6_ok else "framework"
+        return stage, "qc 不过：\n" + json.dumps(
             {"N6不过项": [c for c in n6["checks"] if not c["通过"]], "N8": n8},
             ensure_ascii=False, indent=1, default=str)[:4000], None
     return "pass", None, {"task_dir": mat["dir"], "fixtureScores": mat["fixtureScores"],
                           "crosscheck世界数": rep["世界数"]}
 
 
-def build_case(occupation, out_dir, producer, max_rounds=3, n=200, seed=0):
+def build_case(occupation, out_dir, producer, max_rounds=3, n=200, seed=0, resume=False, log=None):
+    log = log or (lambda m: None)
     case_dir = os.path.join(out_dir, "case")
     os.makedirs(case_dir, exist_ok=True)
-    report = {"occupation": occupation, "out": out_dir, "case_dir": case_dir, "rounds": []}
-    producer.draft_rules(case_dir, occupation)
-    rules = _read(os.path.join(case_dir, "规则.md"))
-    producer.write_code(case_dir, rules)
-    producer.write_solve2(case_dir, rules)          # 只交规则原文——独立性的编排层保证
-    for rnd in range(1, max_rounds + 1):
-        stage, problem, info = _check_round(case_dir, out_dir, rnd, n, seed)
-        report["rounds"].append({"round": rnd, "stage": stage,
-                                 "problem": problem[:1500] if problem else None})
-        if problem is None:
-            report.update(status="accepted", **info)
-            return report
-        if rnd == max_rounds:
-            break
-        changed = producer.repair(case_dir, problem)
-        if changed is None:
-            report["note"] = "producer 不支持返修，直接作废"
-            break
-        report["rounds"][-1]["changed"] = sorted(changed)
-        if "规则.md" in changed or not changed:     # 规则变了（或没改出东西）→ 重产 solve2
-            producer.write_solve2(case_dir, _read(os.path.join(case_dir, "规则.md")))
-    report["status"] = "rejected"
+    report = {"occupation": occupation, "out": out_dir, "case_dir": case_dir,
+              "resumed": bool(resume), "rounds": []}
+
+    def have(*names):
+        return resume and all(os.path.isfile(os.path.join(case_dir, x)) for x in names)
+
+    t0 = time.time()
+    try:
+        if have("规则.md"):
+            log("复用已有 规则.md（不调模型）")
+        else:
+            log("① 写规则（solve 侧模型）…")
+            producer.draft_rules(case_dir, occupation)
+        rules = _read(os.path.join(case_dir, "规则.md"))
+        if have(*CODE_FILES):
+            log("复用已有 参数生成器/solve/断言/物化")
+        else:
+            log("② 写代码（solve 侧模型）…")
+            producer.write_code(case_dir, rules)
+        if have("solve2.py"):
+            log("复用已有 solve2.py")
+        else:
+            log("③ 独立实现 solve2（另一模型，只给规则原文）…")
+            producer.write_solve2(case_dir, rules)          # 只交规则原文——独立性的编排层保证
+        for rnd in range(1, max_rounds + 1):
+            log("第 %d/%d 轮校验：冒烟 → crosscheck(%d 世界) → 物化 → qc …" % (rnd, max_rounds, n))
+            stage, problem, info = _check_round(case_dir, out_dir, rnd, n, seed)
+            report["rounds"].append({"round": rnd, "stage": stage,
+                                     "problem": problem[:1500] if problem else None})
+            if problem is None:
+                report.update(status="accepted", 耗时秒=round(time.time() - t0), **info)
+                log("✓ 第 %d 轮全过，案例接收（%.1f min）" % (rnd, (time.time() - t0) / 60))
+                return report
+            log("✗ 第 %d 轮停在 %s" % (rnd, stage))
+            if stage == "framework":
+                report.update(status="framework_error", 耗时秒=round(time.time() - t0),
+                              note="判分器/地板合成器侧的问题，返修案例修不好，已停止返修")
+                raise FrameworkError(report)
+            if rnd == max_rounds:
+                break
+            log("返修（solve 侧模型）…")
+            changed = producer.repair(case_dir, problem)
+            if changed is None:
+                report["note"] = "producer 不支持返修，直接作废"
+                break
+            report["rounds"][-1]["changed"] = sorted(changed)
+            if "规则.md" in changed or not changed:     # 规则变了（或没改出东西）→ 重产 solve2
+                log("规则有改动 → 重产 solve2 …")
+                producer.write_solve2(case_dir, _read(os.path.join(case_dir, "规则.md")))
+    except InfraError as e:
+        report.update(status="infra_error", 错误=str(e), 耗时秒=round(time.time() - t0))
+        raise InfraError(report)
+    report.update(status="rejected", 耗时秒=round(time.time() - t0))
     raise CaseRejected(report)
 
 
@@ -246,13 +298,31 @@ def solve2_messages(rules_text):
 class LLMProducer:
     """真调模型。solve 侧与 solve2 用**两个不同的 client**（跨家模型，降共模错误）。"""
 
-    def __init__(self, solve_llm, solve2_llm, trace_dir=None, cost=None):
+    def __init__(self, solve_llm, solve2_llm, trace_dir=None, cost=None, min_gap=0.0, log=None):
         self.solve_llm, self.solve2_llm = solve_llm, solve2_llm
         self.trace_dir, self.cost = trace_dir, cost
-        self._n = 0
+        self.min_gap = float(min_gap)   # 同一个 client 两次调用的最小间隔（秒），防 gpt-5.5 这类严限流模型 429
+        self.log = log or (lambda m: None)
+        # 续跑时接着已有轨迹编号，不覆盖上一次的 01_rules… 等文件
+        self._n = len([f for f in os.listdir(trace_dir) if f.endswith("_meta.json")]) \
+            if trace_dir and os.path.isdir(trace_dir) else 0
+        self._last = {}
 
     def _call(self, llm, step, messages):
-        res = llm.chat(messages)
+        wait = self.min_gap - (time.time() - self._last.get(id(llm), -1e18))
+        if wait > 0:
+            self.log("  （同一模型调用间隔，等 %.0fs 防 429）" % wait)
+            time.sleep(wait)
+        t0 = time.time()
+        try:
+            res = llm.chat(messages)
+        except Exception as e:  # noqa: BLE001 调用层的失败（429/超时/5xx）一律算基础设施故障
+            raise InfraError("%s 调用失败（%s）：%s" % (step, getattr(llm, "model", "")
+                                                    or getattr(getattr(llm, "cfg", None), "model", ""), e))
+        finally:
+            self._last[id(llm)] = time.time()
+        self.log("  %s 完成：%.1f min，completion_tokens=%s，finish=%s" % (
+            step, (time.time() - t0) / 60, res.completion_tokens, res.finish_reason))
         if self.cost:
             self.cost.add("casegen:" + step, res)
         self._n += 1
@@ -290,8 +360,9 @@ class LLMProducer:
 
 
 # ---------------- CLI ----------------
-def run_build(occupation, out=None, solve_model="gpt-5.5", solve2_model="glm-5.3-flash",
-              rounds=3, n=200, seed=0):
+def run_build(occupation=None, out=None, solve_model="gpt-5.5", solve2_model="glm-5.3-flash",
+              rounds=3, n=200, seed=0, resume=None, call_gap=30.0):
+    """退出码：0 接收 / 1 作废（案例质量） / 2 配置问题 / 3 不是案例的错（网关故障或框架侧问题）。"""
     from .config import PipelineConfig
     from .cost import CostTracker
     from .llm import get_client
@@ -299,20 +370,40 @@ def run_build(occupation, out=None, solve_model="gpt-5.5", solve2_model="glm-5.3
     if cfg.llm.provider == "mock":
         print("✗ ALE_LLM_PROVIDER=mock：生成半段要真模型（.env 设 openai + 网关 + key）", file=sys.stderr)
         return 2
+    if resume:
+        out = resume
+        if not os.path.isdir(os.path.join(out, "case")):
+            print("✗ --resume 目录下没有 case/：%s" % out, file=sys.stderr)
+            return 2
+        old = os.path.join(out, "report.json")
+        if os.path.isfile(old):          # 旧报告留档，不覆盖
+            if not occupation:
+                occupation = json.load(open(old, encoding="utf-8")).get("occupation")
+            os.rename(old, os.path.join(out, "report.%s.json" % time.strftime(
+                "%Y%m%d-%H%M%S", time.localtime(os.path.getmtime(old)))))
+    if not occupation:
+        print("✗ 需要 --occupation（或 --resume 一个带 report.json 的目录）", file=sys.stderr)
+        return 2
+    os.environ.setdefault("ALE_LLM_RETRIES", "6")   # 429 退避 8/16/32/60/60s，扛约 3 分钟限流
     out = out or os.path.join(cfg.runs_dir, "casegen", "%s-%s" % (
         scaffold._safe_seg(occupation, 24), time.strftime("%Y%m%d-%H%M%S")))
     os.makedirs(out, exist_ok=True)
+    _stderr_log("产出目录：%s%s" % (out, "（续跑）" if resume else ""))
     cost = CostTracker()
     prod = LLMProducer(get_client(dataclasses.replace(cfg.llm, model=solve_model)),
                        get_client(dataclasses.replace(cfg.llm, model=solve2_model)),
-                       trace_dir=os.path.join(out, "trace"), cost=cost)
+                       trace_dir=os.path.join(out, "trace"), cost=cost,
+                       min_gap=call_gap, log=_stderr_log)
     try:
-        rep, code = build_case(occupation, out, prod, max_rounds=rounds, n=n, seed=seed), 0
+        rep, code = build_case(occupation, out, prod, max_rounds=rounds, n=n, seed=seed,
+                               resume=bool(resume), log=_stderr_log), 0
     except CaseRejected as e:
         rep, code = e.args[0], 1
+    except (InfraError, FrameworkError) as e:
+        rep, code = e.args[0], 3
     except RuntimeError as e:
         rep, code = {"status": "rejected", "错误": str(e)}, 1
-    rep.update({"模型": {"solve": solve_model, "solve2": solve2_model},
+    rep.update({"模型": {"solve": solve_model, "solve2": solve2_model}, "退出码": code,
                 "成本RMB": cost.total(), "未计价模型": cost.unpriced_models()})
     with open(os.path.join(out, "report.json"), "w", encoding="utf-8") as f:
         json.dump(rep, f, ensure_ascii=False, indent=2, default=str)
@@ -391,6 +482,49 @@ def _selftest():
         pr = [f for f in sorted(os.listdir(trace)) if f.endswith("_repair_prompt.json")]
         check(bool(pr) and "BUG: >= 应为 >" not in _read(os.path.join(trace, pr[0])),
               "返修 prompt 不含 solve2.py（不让 solve 侧锚定独立实现）")
+
+        # 网关故障 → infra_error，不消耗返修轮次
+        class FailClient:
+            model = "fail"
+
+            def chat(self, messages, **kw):
+                raise RuntimeError("网关请求失败（重试 6 次仍失败）：HTTP Error 429: Too Many Requests")
+        try:
+            build_case("（自测）", os.path.join(tmp, "infra"), LLMProducer(FailClient(), FailClient()))
+            check(False, "网关故障应抛 InfraError")
+        except InfraError as e:
+            r = e.args[0]
+            check(r["status"] == "infra_error" and r["rounds"] == [] and "429" in r["错误"],
+                  "网关故障（429）→ infra_error、不算作废、不消耗返修")
+
+        # 地板白拿分 → framework_error，不返修（临时把地板合成器换成空操作来模拟）
+        orig = casegen.floor.synthesize
+        casegen.floor.synthesize = lambda d, seed=0: []
+        try:
+            build_case("（自测）", os.path.join(tmp, "fw"), StaticProducer(good), n=60)
+            check(False, "地板白拿分应抛 FrameworkError")
+        except FrameworkError as e:
+            r = e.args[0]
+            check(r["status"] == "framework_error" and len(r["rounds"]) == 1
+                  and "白拿分的字段" in (r["rounds"][0]["problem"] or ""),
+                  "地板白拿分 → framework_error、带字段线索、不烧返修")
+        finally:
+            casegen.floor.synthesize = orig
+
+        # 续跑：文件都在就零次 producer 调用
+        class Boom:
+            def __getattr__(self, name):
+                raise AssertionError("续跑不该调用 producer.%s" % name)
+        rep = build_case("（自测）", os.path.join(tmp, "static"), Boom(), n=60, resume=True)
+        check(rep["status"] == "accepted" and rep["resumed"], "--resume：已有文件全复用，零次模型调用即接收")
+
+        # 同一 client 调用间隔
+        m = MockLLMClient("gap")
+        p = LLMProducer(m, m, min_gap=0.3)
+        t0 = time.time()
+        p._call(m, "a", [{"role": "user", "content": "x"}])
+        p._call(m, "b", [{"role": "user", "content": "x"}])
+        check(time.time() - t0 >= 0.3, "同一模型两次调用之间按 min_gap 等待（防 429）")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     ok = all(res)
@@ -403,11 +537,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="pipeline.casegen_build")
     ap.add_argument("--occupation")
     ap.add_argument("--out")
+    ap.add_argument("--resume", help="续跑某个产出目录（复用已有 规则/代码/solve2）")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
-    if a.selftest or not a.occupation:
+    if a.selftest or not (a.occupation or a.resume):
         return 0 if _selftest() else 1
-    return run_build(a.occupation, a.out)
+    return run_build(a.occupation, a.out, resume=a.resume)
 
 
 if __name__ == "__main__":
