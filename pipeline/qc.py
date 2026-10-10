@@ -108,11 +108,14 @@ def difficulty_gate(task):
 
     4 条数据时手动还行，几个人同时铺量就一定会把「进库=True」当成「这条合格」，
     于是便宜模型能满分的水题混进来。这里按契约 §6.3 程序化判：
-      便宜档 glm-5.3-flash  nRuns≥3  fullPassRate 必须 = 0
-      前沿档 GPT-5.5        nRuns≥3  fullPassRate ≤ 1/3
+      便宜档 glm-5.3-flash  fullPassRate 必须 = 0
+      前沿档 GPT-5.5        fullPassRate ≤ 1/3
+    三条硬规矩（契约 §6.3）：
+      ① 门槛只认 agent 档（toolset=agent-file-tools），单发盲解只作预筛、不算数；
+      ② 边界补跑：fpr=0 → 3 跑即可；0<fpr≤1/3（擦线）必须补到 6 跑，否则靠运气过；
+      ③ 判分器版本必须对得上——改了判分器就等于换了考试，旧难度数字作废（§6.2 把
+         scorerVersion 钉进测量条目正是为此）。
     未测 → 不通过（显式写「难度未测」，不是默默算过）。
-    另外**判分器版本必须对得上**：改了判分器就等于换了考试，旧难度数字不再算数
-    （契约 §6.2 把 scorerVersion 钉进测量条目正是为此）。
     """
     tiers = (("便宜档", "glm-5.3-flash", lambda r: r == 0, "必须 = 0"),
              ("前沿档", "gpt-5.5", lambda r: r <= 1.0 / 3 + 1e-9, "≤ 1/3"))
@@ -127,26 +130,39 @@ def difficulty_gate(task):
                                "当前判分器测的（契约 §6.2）"}
     rows, ok_all = [], True
     for tier, model, rule, desc in tiers:
+        # §6.3：门槛只认 agent 档。单发盲解（single-shot-blind）只作便宜预筛、不算入库依据。
         hit = [e for e in md if str(e.get("model", "")).lower() == model
-               and str(e.get("scorerVersion", "")).strip() == cur_ver]
+               and str(e.get("scorerVersion", "")).strip() == cur_ver
+               and str(e.get("toolset", "")) == "agent-file-tools"]
         if not hit:
-            stale = [e for e in md if str(e.get("model", "")).lower() == model]
-            rows.append({"档": tier, "基准模型": model, "通过": False,
-                         "说明": "判分器已改版(当前 %s)，旧测量 scorerVersion=%s 不再算数，需重测"
-                                 % (cur_ver, [e.get("scorerVersion") for e in stale])
-                                 if stale else "未测"})
+            same_model = [e for e in md if str(e.get("model", "")).lower() == model]
+            cur_any = [e for e in same_model
+                       if str(e.get("scorerVersion", "")).strip() == cur_ver]
+            if cur_any:   # 有当前版本的测量，但都是单发预筛、没有 agent 档
+                why = ("只有单发预筛（toolset=%s），缺 agent 档测量——契约 §6.3 门槛只认 "
+                       "agent-file-tools" % [e.get("toolset") for e in cur_any])
+            elif same_model:  # 有过 agent 档测量，但判分器已改版
+                why = ("判分器已改版(当前 %s)，旧测量 scorerVersion=%s 不再算数，需重测"
+                       % (cur_ver, [e.get("scorerVersion") for e in same_model]))
+            else:
+                why = "未测"
+            rows.append({"档": tier, "基准模型": model, "通过": False, "说明": why})
             ok_all = False
             continue
         e = sorted(hit, key=lambda x: str(x.get("measuredAt", "")))[-1]  # 取最近一次
         fpr, n = e.get("fullPassRate"), e.get("nRuns") or 0
         miss = [k for k in ("model", "toolset", "budget", "scorerVersion", "nRuns")
                 if not e.get(k)]
-        ok = isinstance(fpr, (int, float)) and rule(fpr) and n >= 3 and not miss
+        # §6.3 边界补跑：fpr=0 → 3 跑即可；0<fpr≤1/3（擦线）必须补到 6 跑。
+        need_n = 3 if (isinstance(fpr, (int, float)) and fpr == 0) else 6
+        ok = isinstance(fpr, (int, float)) and rule(fpr) and n >= need_n and not miss
+        note = ({"说明": "nRuns=%d < %d（契约 §6.3：fpr=0 需 3 跑，0<fpr≤1/3 需补到 6 跑）"
+                         % (n, need_n)} if n < need_n else {})
         rows.append({"档": tier, "基准模型": model, "fullPassRate": fpr, "nRuns": n,
                      "meanScore": e.get("meanScore"), "toolset": e.get("toolset"),
                      "scorerVersion": e.get("scorerVersion"), "门槛": desc, "通过": ok,
                      **({"缺字段": miss} if miss else {}),
-                     **({} if n >= 3 else {"说明": "nRuns<3，契约 §6.3 要求 3 跑"})})
+                     **note})
         ok_all = ok_all and ok
     return ok_all, {"task_id": task.task_id, "通过": ok_all, "判分器版本": cur_ver,
                     "各档": rows}
