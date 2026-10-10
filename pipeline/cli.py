@@ -66,6 +66,14 @@ def main(argv=None):
     pc.add_argument("--seed", type=int, default=0)
     pc.add_argument("--tol", type=float, default=1e-6, help="全局 absolute 容差，可被 容差.json 覆盖")
 
+    pg = sub.add_parser("build-case", help="生成半段：模型产闭世界案例 → crosscheck → 物化 → qc")
+    pg.add_argument("--occupation", required=True)
+    pg.add_argument("--out", help="产出目录（默认 ALE_RUNS_DIR/casegen/<职业>-<时间>，不入公开仓）")
+    pg.add_argument("--solve-model", default="gpt-5.5")
+    pg.add_argument("--solve2-model", default="glm-5.3-flash")
+    pg.add_argument("--rounds", type=int, default=3, help="返修预算：最多几轮，仍不过即作废")
+    pg.add_argument("--n", type=int, default=200, help="crosscheck 世界数")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "list":
@@ -117,6 +125,11 @@ def main(argv=None):
 
     if args.cmd == "crosscheck":
         return _crosscheck.run_cli(args.case, args.n, args.seed, args.tol)
+
+    if args.cmd == "build-case":
+        from . import casegen_build
+        return casegen_build.run_build(args.occupation, args.out, args.solve_model,
+                                       args.solve2_model, args.rounds, args.n)
 
     return 0
 
