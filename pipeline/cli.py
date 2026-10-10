@@ -11,6 +11,7 @@ import json
 import sys
 
 from . import harness, qc, scaffold, occupations as occ
+from . import crosscheck as _crosscheck
 from .config import PipelineConfig
 from .llm import get_client
 from .orchestrator import blind_batch, build_batch, qc_batch
@@ -58,6 +59,12 @@ def main(argv=None):
 
     py = sub.add_parser("sync-schema")
     py.add_argument("task", help="任务目录：从标准答案反推字段说明写回 task_card")
+
+    pc = sub.add_parser("crosscheck")
+    pc.add_argument("--case", required=True, help="案例目录（规则.md/参数生成器.py/solve.py/solve2.py[/断言.py/容差.json]）")
+    pc.add_argument("--n", type=int, default=200)
+    pc.add_argument("--seed", type=int, default=0)
+    pc.add_argument("--tol", type=float, default=1e-6, help="全局 absolute 容差，可被 容差.json 覆盖")
 
     args = ap.parse_args(argv)
 
@@ -107,6 +114,9 @@ def main(argv=None):
     if args.cmd == "sync-schema":
         _pp(scaffold.sync_schema(args.task))
         return 0
+
+    if args.cmd == "crosscheck":
+        return _crosscheck.run_cli(args.case, args.n, args.seed, args.tol)
 
     return 0
 
