@@ -71,6 +71,8 @@ def main():
         _run("程序化地板自测", ["-m", "pipeline.floor"])[0],
         _run("agent 档动作循环自测", ["-m", "pipeline.agentsolve"])[0],
         _run("双实现交叉复算自测", ["-m", "pipeline.crosscheck", "--selftest"])[0],
+        _run("casegen 物化半段自测", ["-m", "pipeline.casegen", "--selftest"])[0],
+        _run("casegen 生成半段自测", ["-m", "pipeline.casegen_build", "--selftest"])[0],
         _run("N7 runner 控制流自测", ["n7_run.py", "--selftest"],
              {"ALE_TASKS_DIR": os.path.join(ROOT, "tasks"),
               "ALE_RUNS_DIR": os.path.join(ROOT, ".ci-runs"),
