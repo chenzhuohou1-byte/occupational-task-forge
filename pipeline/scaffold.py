@@ -479,7 +479,7 @@ def scaffold_task(spec, tasks_dir):
             },
         },
         "元数据": spec.get("元数据", {"机器规格": "2C4G", "超时秒": 1800, "判分构成": "纯代码",
-                                      "schema": "判分契约 v1.0"}),
+                                      "生成方式": "", "schema": "判分契约 v1.0"}),
         "scoringBasis": [],
     }
 
@@ -502,6 +502,7 @@ def scaffold_task(spec, tasks_dir):
         todos.append(os.path.relpath(p, tasks_dir))
 
     todos.append("填 scoringBasis（判分契约 §7：每个判分点标 material/external 出处；空数组不可进库）")
+    todos.append("填 元数据.生成方式（程序化生成 / 人工构造 / 混合；数据集 schema 的「生成方式」列读它）")
     todos.append("造 output_test_random/ 与 output_test_partial/ 夹具（判分契约 §4；需先填好标准答案）")
 
     out = {"dir": task_dir, "todos": todos}
