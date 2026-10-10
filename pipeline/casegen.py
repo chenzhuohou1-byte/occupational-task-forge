@@ -7,6 +7,7 @@
 random 用 floor 程序化合成）→ 跑判分器回填 observed → 补 scoringBasis/生成方式。产出可直接过 qc 的 N6/N8。
 生成半段（模型产 规则/生成器/solve/solve2 + crosscheck 把关）后续再接，不在本模块。
 """
+import datetime
 import importlib.util
 import json
 import os
@@ -118,7 +119,25 @@ class FixtureMismatch(RuntimeError):
         return any(b in self.FRAMEWORK_SIDE for b in self.bad)
 
 
-def materialize(case_dir, out_root, seed=0):
+DRAFT_FIELDS = ("一句话概括", "操作路径", "答复要点梗概")
+
+
+def _sidecar(task, occupation):
+    """数据集视图 sidecar（数据仓 _meta/dataset-schema.md v0.1）。pipeline 不读它；
+    模型写在 物化.TASK 里的三个草稿字段原样搬过来、标 _draft=true 待人核，提交人留空给人填。"""
+    def txt(v):
+        return "\n".join(map(str, v)) if isinstance(v, (list, tuple)) else str(v or "")
+    side = {"_schema": "KA类数据集 sidecar v0.1",
+            "_note": "本文件只服务数据集视图，pipeline 不读。模型草稿字段人核后把 _draft 删除或置 false。",
+            "提交人": "", "职位": occupation or "", "一句话概括": "", "自动化类型": "闭世界",
+            "构建日期": datetime.date.today().isoformat(), "操作路径": "", "答复要点梗概": ""}
+    for k in DRAFT_FIELDS:
+        side[k] = txt(task.get(k))
+    side["_draft"] = {k: bool(side[k]) for k in DRAFT_FIELDS}
+    return side
+
+
+def materialize(case_dir, out_root, seed=0, occupation=None):
     物化 = _load(os.path.join(case_dir, "物化.py"), "_cg_mat")
     solve_mod = _load(os.path.join(case_dir, "solve.py"), "_cg_solve")
     world = getattr(物化, "INSTANCE", None)
@@ -181,12 +200,15 @@ def materialize(case_dir, out_root, seed=0):
             fs[name] = {"expected": round(obs[name], 4), "observed": round(obs[name], 4)}
     card["scoringBasis"] = task["scoringBasis"]
     card["priorComplexity"] = {
-        "steps": len(world.get("明细", [])) * 3, "inputDocs": 3, "crossDocJoins": 1,
-        "plantedTraps": 2, "hardStops": 0, "outputFields": len(answer.get("明细结果", [])) * 2 + 3,
+        "steps": len(world.get("明细", [])) * 3, "inputDocs": len(os.listdir(indir)), "crossDocJoins": 1,
+        "plantedTraps": len(getattr(物化, "TRAPS", None) or {}) or 2, "hardStops": 0,
+        "outputFields": len(answer.get("明细结果", [])) * 2 + 3,
         "conventionRulings": len(task["scoringBasis"]),
         "说明": "程序化物化自动填的可数项；难度非先验，须 N7 实测（§6.1）。"}
     with open(card_path, "w", encoding="utf-8") as f:
         f.write(json.dumps(card, ensure_ascii=False, indent=2) + "\n")
+    with open(os.path.join(task_dir, "dataset.json"), "w", encoding="utf-8") as f:
+        f.write(json.dumps(_sidecar(task, occupation), ensure_ascii=False, indent=2) + "\n")
     return {"dir": task_dir, "fixtureScores": obs}
 
 
