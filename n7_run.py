@@ -35,15 +35,66 @@ GATE = {"便宜档": ("== 0", lambda r: r == 0.0),
 
 
 def resolve_task(cfg, ident):
-    """ident 可以是 task_id、或相对/绝对任务目录路径。"""
-    if ident and os.path.isdir(ident) and os.path.isfile(os.path.join(ident, "task_card.json")):
-        return tasks.load_task(ident)
+    """ident 可以是 task_id、或相对/绝对任务目录路径。
+
+    宁可报错也不猜：空 ident、匹配不到、匹配到多条，一律退出并列出候选。
+    原来空字符串会命中 `t.dir.endswith("")`（任何字符串都以空串结尾），静默测了排第一的任务——
+    实测一次 `N7_TASK="$T"` 而 T 未赋值，难度体检被测到了一条无关任务上；同一 task_id
+    出现在多个目录时也只取第一个。路径后缀匹配现在要求落在目录边界上。
+    """
+    ident = (ident or "").strip()
+    if not ident:
+        sys.exit("N7_TASK 为空：没指定要测哪条任务（多半是 shell 变量没赋值，"
+                 "如 N7_TASK=\"$T\" 而 T 未定义）")
+    if os.path.isdir(ident):
+        if os.path.isfile(os.path.join(ident, "task_card.json")):
+            return tasks.load_task(ident)
+        sys.exit("N7_TASK 是目录但不是任务目录（缺 task_card.json）：%s" % ident)
     found = tasks.discover_tasks(cfg.tasks_dir)
-    for t in found:
-        if t.task_id == ident or t.dir.rstrip("/").endswith(ident):
-            return t
+    hits = [t for t in found if t.task_id == ident]
+    if not hits:
+        tail = os.sep + ident.strip(os.sep)
+        hits = [t for t in found if t.dir.rstrip(os.sep).endswith(tail)]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        sys.exit("N7_TASK=%r 匹配到 %d 条任务，不知道该测哪条——请改用任务目录的绝对路径：\n%s"
+                 % (ident, len(hits), "\n".join("  - %s  %s" % (t.task_id, t.dir) for t in hits)))
     ids = "\n".join("  - %s" % t.task_id for t in found)
     sys.exit("找不到任务 %r。可选：\n%s" % (ident, ids))
+
+
+def _resolve_selftest(cfg):
+    """resolve_task 的离线回归：空 / 不存在 / 多重匹配一律退出，唯一匹配才返回。"""
+    import shutil
+    import tempfile
+
+    def exits(ident, c=cfg):
+        try:
+            resolve_task(c, ident)
+            return False
+        except SystemExit:
+            return True
+
+    found = tasks.discover_tasks(cfg.tasks_dir)
+    assert found, "selftest 需要 ALE_TASKS_DIR 下至少有一条任务"
+    t0 = found[0]
+    assert exits(""), "空 N7_TASK 应报错退出"
+    assert exits("   "), "空白 N7_TASK 应报错退出"
+    assert exits("no-such-task-xyz"), "不存在的任务应报错退出"
+    assert resolve_task(cfg, t0.task_id).dir == t0.dir, "唯一 task_id 应命中"
+    assert resolve_task(cfg, t0.dir).dir == t0.dir, "任务目录路径应命中"
+    tmp = tempfile.mkdtemp(prefix="n7_resolve_")
+    try:
+        for i in (1, 2):
+            shutil.copytree(t0.dir, os.path.join(tmp, "copy%d" % i))
+
+        class _Cfg:
+            tasks_dir = tmp
+        assert exits(t0.task_id, _Cfg), "同一 task_id 出现在两个目录应报错退出（不许静默取第一个）"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("[selftest] resolve_task：空/不存在/多重匹配均报错退出，唯一匹配命中", file=sys.stderr)
 
 
 def _trace_base(cfg, task, mode):
@@ -77,6 +128,8 @@ def main():
               file=sys.stderr)
 
     n_runs = int(os.environ.get("N7_RUNS", "2" if selftest else "3"))
+    if selftest:
+        _resolve_selftest(cfg)
     task = resolve_task(cfg, os.environ.get("N7_TASK", DEFAULT_TASK))
     tier = os.environ.get("N7_TIER", "").strip()
     mode = os.environ.get("N7_MODE", "blind").strip()    # blind=单发盲解 / agent=多步带文件工具
