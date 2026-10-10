@@ -72,6 +72,9 @@ def _perturb(obj, rng, keep=frozenset()):
         return _perturb_number(obj, rng)
     if isinstance(obj, str):
         return _fake_str(rng)
+    if obj is None:
+        # 标准答案里的 null 也要换成错值：原样保留会让「结构对、值全错」的地板白拿这一格
+        return _fake_str(rng)
     return obj
 
 
@@ -85,8 +88,8 @@ def _perturb_csv(text, rng):
         new = list(row)
         for i in range(1, len(new)):
             cell = new[i].strip()
-            if not cell:
-                continue
+            # 空单元格也要扰动：标准答案里本就该空的格（如「异常原因」在合格行为空），
+            # 原样留空就会被判 '' == '' 答对，地板白拿分（实测一条自动生成案例 random 得 0.12）
             try:
                 v = float(cell.replace(",", ""))
             except ValueError:
@@ -158,7 +161,19 @@ def _selftest():
     assert rows[0] == ["姓名", "应纳税额", "税率"], "CSV 表头被改了"
     assert [r[0] for r in rows[1:]] == ["张伟", "李娜"], "CSV 行键列没保住"
     assert rows[1][1] != "9216.00", "CSV 数值没被扰动"
-    print("floor 自测通过：键名/表头/行键保留、值全变（%d 文件）" % 2)
+
+    # 空单元格 / null：标准答案里本该空的格，地板也必须改成错值
+    with open(os.path.join(d, "c.csv"), "w", encoding="utf-8") as f:
+        f.write("行号,判定,异常原因\n101,合格,\n103,不判定,未备案\n")
+    with open(os.path.join(d, "d.json"), "w", encoding="utf-8") as f:
+        json.dump({"备注": None, "清单": [1, 2]}, f)
+    synthesize(d)
+    rows = list(csv.reader(io.StringIO(open(os.path.join(d, "c.csv"), encoding="utf-8").read())))
+    assert [r[0] for r in rows[1:]] == ["101", "103"], "CSV 行键列没保住"
+    assert rows[1][2] != "", "CSV 空单元格没被扰动（地板会白拿 '' == '' 的分）"
+    got = json.load(open(os.path.join(d, "d.json"), encoding="utf-8"))
+    assert got["备注"] is not None, "JSON null 没被扰动"
+    print("floor 自测通过：键名/表头/行键保留、值全变（含空单元格与 null）")
     return True
 
 
