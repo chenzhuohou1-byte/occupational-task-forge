@@ -108,8 +108,8 @@ def difficulty_gate(task):
 
     4 条数据时手动还行，几个人同时铺量就一定会把「进库=True」当成「这条合格」，
     于是便宜模型能满分的水题混进来。这里按契约 §6.3 程序化判：
-      便宜档 glm-5.3-flash  fullPassRate 必须 = 0
-      前沿档 GPT-5.5        fullPassRate ≤ 1/3
+      便宜档 glm-5.3-flash       fullPassRate 必须 = 0
+      前沿档 Claude Sonnet 5.5    fullPassRate ≤ 1/3
     三条硬规矩（契约 §6.3）：
       ① 门槛只认 agent 档（toolset=agent-file-tools），单发盲解只作预筛、不算数；
       ② 边界补跑：fpr=0 → 3 跑即可；0<fpr≤1/3（擦线）必须补到 6 跑，否则靠运气过；
@@ -117,8 +117,10 @@ def difficulty_gate(task):
          scorerVersion 钉进测量条目正是为此）。
     未测 → 不通过（显式写「难度未测」，不是默默算过）。
     """
+    # 注意：下面第二列须是 measuredDifficulty.model 的小写形式（本函数按 .lower() 精确匹配）。
+    # 前沿档记录名为 "Claude Sonnet 5.5"（网关实收名，见契约 §6.3），小写即 "claude sonnet 5.5"。
     tiers = (("便宜档", "glm-5.3-flash", lambda r: r == 0, "必须 = 0"),
-             ("前沿档", "gpt-5.5", lambda r: r <= 1.0 / 3 + 1e-9, "≤ 1/3"))
+             ("前沿档", "claude sonnet 5.5", lambda r: r <= 1.0 / 3 + 1e-9, "≤ 1/3"))
     md = task.card.get("measuredDifficulty")
     if not isinstance(md, list) or not md:
         return False, {"task_id": task.task_id, "通过": False,

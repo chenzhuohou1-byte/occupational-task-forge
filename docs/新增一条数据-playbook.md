@@ -39,7 +39,7 @@ python -m pipeline.cli qc --all                 # 要 进库=True（六条件：
 ## 7. 难度体检（契约 §6.3，决定算不算有效数据）
 ```
 ALE_LLM_MODEL=glm-5.3-flash   ALE_LLM_REASONING_EFFORT=low N7_RUNS=3 N7_TIER=便宜档 N7_TASK=<id> N7_OUT=runs/n7/<id>-glm.json python3 n7_run.py
-ALE_LLM_MODEL=gpt-5.5         ALE_LLM_REASONING_EFFORT=low N7_RUNS=3 N7_TIER=前沿档 ALE_LLM_INTER_RUN_SLEEP=100 N7_TASK=<id> N7_OUT=runs/n7/<id>-gpt.json python3 n7_run.py
+ALE_LLM_MODEL="Claude Sonnet 5.5" ALE_LLM_REASONING_EFFORT=low N7_RUNS=3 N7_TIER=前沿档 ALE_LLM_INTER_RUN_SLEEP=100 N7_TASK=<id> N7_OUT=runs/n7/<id>-sonnet.json python3 n7_run.py
 ```
 - **便宜档必须 fullPassRate=0**；前沿档 ≤ 1/3。便宜模型能满分 = 水题、退回加难。
 - **加难杠杆按实测强弱排序**（强的先用）：
