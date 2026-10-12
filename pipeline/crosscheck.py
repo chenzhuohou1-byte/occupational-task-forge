@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sys
+import traceback
 
 REQUIRED = ("规则.md", "参数生成器.py", "solve.py", "solve2.py")
 # solve2 只许见 规则.md：只认代码构造（import / open 读 solve 或标准答案），不误杀注释里的字样
@@ -127,13 +128,31 @@ def crosscheck(case_dir, n=200, seed=0, global_tol=1e-6):
     worlds = gen.worlds(n, seed)
     mism, broken = [], []
     for i, w in enumerate(worlds):
-        a = s1.solve(dict(w))
+        # solve / solve2 在某个世界上抛异常，本身就是两份实现对不上的一种（一个算得出、一个崩了，
+        # 或都崩在不同地方）—— 记成不一致喂回返修，绝不让异常冒出去把整条产线打崩、丢掉报告。
+        try:
+            a = s1.solve(dict(w))
+        except Exception:  # noqa: BLE001
+            mism.append({"序号": i, "world": w, "差异": [{"path": "", "错误": "solve 抛异常",
+                                                        "trace": traceback.format_exc(limit=4)}]})
+            continue
+        try:
+            b = s2.solve(dict(w))
+        except Exception:  # noqa: BLE001
+            mism.append({"序号": i, "world": w, "差异": [{"path": "", "错误": "solve2 抛异常",
+                                                        "trace": traceback.format_exc(limit=4)}]})
+            continue
         diffs = []
-        _cmp(a, s2.solve(dict(w)), tol, "", diffs)
+        _cmp(a, b, tol, "", diffs)
         if diffs:
             mism.append({"序号": i, "world": w, "差异": diffs})
         if asserts is not None:
-            v = asserts.assertions(dict(w), a)
+            try:
+                v = asserts.assertions(dict(w), a)
+            except Exception:  # noqa: BLE001 断言脚本自己崩了也算案例缺陷
+                broken.append({"序号": i, "world": w,
+                               "破坏的恒等式": ["断言.py 抛异常：\n" + traceback.format_exc(limit=4)]})
+                continue
             if v:
                 broken.append({"序号": i, "world": w, "破坏的恒等式": v})
     return {
@@ -195,8 +214,33 @@ def _selftest():
     c = _guard_catches()
     print(("✓" if c else "✗") + " 独立性守卫：solve2 偷看 solve 被拦"); ok &= c
 
+    # 异常不崩产线：solve2 在某世界抛异常 → 记成不一致（不冒泡），crosscheck 正常返回报告
+    c = _raises_as_mismatch()
+    print(("✓" if c else "✗") + " solve2 抛异常 → 记不一致、不打崩产线"); ok &= c
+
     print("\n%s" % ("crosscheck 自测通过" if ok else "crosscheck 自测失败"))
     return ok
+
+
+def _raises_as_mismatch():
+    import tempfile
+    import shutil
+    good = os.path.join(_CASES, "good")
+    tmp = tempfile.mkdtemp(prefix="cc_raise_")
+    try:
+        for f in REQUIRED:
+            shutil.copy(os.path.join(good, f), os.path.join(tmp, f))
+        # solve2 对任意世界都抛 KeyError（模拟它预期的世界结构与生成器不符）
+        with open(os.path.join(tmp, "solve2.py"), "w", encoding="utf-8") as fp:
+            fp.write("def solve(world):\n    return world['不存在的键']\n")
+        try:
+            rep = crosscheck(tmp, n=5, seed=0)
+        except Exception:  # noqa: BLE001 不该抛出来
+            return False
+        d0 = (rep.get("第一个反例") or {}).get("差异") or [{}]
+        return (not rep["一致"]) and rep["不一致数"] >= 1 and "solve2 抛异常" in d0[0].get("错误", "")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _guard_catches():
