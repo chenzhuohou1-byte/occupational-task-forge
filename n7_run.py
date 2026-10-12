@@ -141,24 +141,51 @@ def main():
 
     runs, errors = [], []
     gap = float(os.environ.get("ALE_LLM_INTER_RUN_SLEEP", "0"))
+    fault_retry = int(os.environ.get("N7_FAULT_RETRY", "2"))   # 每个槽位遇测量故障最多补跑几次
     trace_base = _trace_base(cfg, task, mode)
-    for i in range(n_runs):
-        if i and gap:
+
+    def _one(td):
+        if mode == "agent":
+            _, r = agentsolve.agent_solve(task, client, cost, max_steps, trace_dir=td)
+        else:
+            _, r = qc.n7_blind_solve(task, client, cost, trace_dir=td)
+        return r
+
+    slept = [False]   # 控制跑间 gap：除第一次外，每次真实调用前留白
+
+    def _sleep_between():
+        if slept[0] and gap:
             time.sleep(gap)   # 跑间留白，躲限流严的模型（如 gpt-5.5）的突发 429
-        td = os.path.join(trace_base, "run%d" % (i + 1)) if trace_base else None
-        try:
-            if mode == "agent":
-                _, r = agentsolve.agent_solve(task, client, cost, max_steps, trace_dir=td)
-            else:
-                _, r = qc.n7_blind_solve(task, client, cost, trace_dir=td)
+        slept[0] = True
+
+    for i in range(n_runs):
+        # 每个槽位：先正常跑；是测量故障（如 finish_reason=length / 504 / 断流）就补跑，
+        # 直到拿到一次有效结果或用尽 fault_retry 预算。补跑不改 maxSteps/maxTokens，口径不变。
+        got = False
+        for attempt in range(fault_retry + 1):
+            tag = "run%d" % (i + 1) if attempt == 0 else "run%d_retry%d" % (i + 1, attempt)
+            td = os.path.join(trace_base, tag) if trace_base else None
+            _sleep_between()
+            try:
+                r = _one(td)
+            except Exception as e:   # 网关 504 / 断流 / finish_reason=length 等 = 测量故障
+                errors.append("%s: %s: %s" % (tag, type(e).__name__, e))
+                more = attempt < fault_retry
+                print("  run %d/%d%s  ✗ 测量故障：%s%s"
+                      % (i + 1, n_runs, "" if attempt == 0 else "(补跑%d)" % attempt, e,
+                         "，补跑…" if more else "，补跑预算用尽"), file=sys.stderr)
+                continue
             runs.append(r)
-            print("  run %d/%d  score=%.4f passed=%s 写出文件=%d%s"
-                  % (i + 1, n_runs, r["score"], r["passed"], r["写出文件数"],
+            print("  run %d/%d%s  score=%.4f passed=%s 写出文件=%d%s"
+                  % (i + 1, n_runs, "" if attempt == 0 else "(补跑%d)" % attempt,
+                     r["score"], r["passed"], r["写出文件数"],
                      "  步数=%s 噪声步=%s" % (r.get("步数"), r.get("协议噪声步"))
                      if mode == "agent" else ""), file=sys.stderr)
-        except Exception as e:   # 网关 504 / 断流等 = 测量故障，不记成「agent 不会做」
-            errors.append("run %d: %s: %s" % (i + 1, type(e).__name__, e))
-            print("  run %d/%d  ✗ 测量故障：%s" % (i + 1, n_runs, e), file=sys.stderr)
+            got = True
+            break
+        if not got:
+            print("  run %d/%d  ✗ 该槽位补跑 %d 次仍全是测量故障，放弃"
+                  % (i + 1, n_runs, fault_retry), file=sys.stderr)
 
 
 
@@ -187,6 +214,7 @@ def main():
         "task_id": task.task_id,
         "entry": entry,
         "_runsRequested": n_runs,
+        "_faultRetryBudget": fault_retry,
         "_perRun": runs,
         "_errors": errors,
         "_traceDir": trace_base or "(未留轨迹，N7_NO_TRACE=1)",
