@@ -11,31 +11,44 @@ import tempfile
 
 from . import harness
 
+# ---- §6.3 难度分级 / §7 用途 的两组常量（2026-10-14 口径变更） ----
+CHEAP_MODEL = "glm-5.3-flash"           # 便宜档基准模型（measuredDifficulty.model 的小写形式）
+FRONTIER_MODEL = "claude sonnet 5.5"    # 前沿档基准模型（网关实收名，见契约 §6.3）
+L1_FLOOR = 2.0 / 3 - 1e-9               # 便宜档满分率 ≥ 2/3 → L1
+L4_CEIL = 1.0 / 3 + 1e-9                # 前沿档满分率 ≤ 1/3 → L4
+PURPOSES = ("训练集", "测试集")
+
+
+def task_purpose(task):
+    """§7 用途：`训练集` / `测试集`，决定 scoringBasis 那道闸门的松紧。
+
+    **缺省按测试集严判** —— 放宽必须显式声明。漏填一个字段就自动得到更松的闸门，
+    那是在给自己挖坑：铺量时谁都不会注意少写了什么。
+    """
+    v = str(task.card.get("用途") or "").strip()
+    return (v if v in PURPOSES else "测试集"), v in PURPOSES
+
 
 def n6_verify(task, pass_threshold=1.0):
     """N6 进库校验（确定性，判分契约 §8）：
       1) 四档夹具实测分 == 任务卡声明的 fixtureScores（老任务只有正负两档时退化为两档）
-      2) 判分可复现：同一 output 判两次分数一致
+      2) 判分可复现：同一 output 判两次分数一致（**大模型判分项例外**：改判多数票稳定，§9.4）
       3) 判分器独立：import 图里没有造附件/生成器模块
       4) 数据已填：assets/ 无 TODO 占位
-      5) 判分依据可溯源：scoringBasis 非空
-      6) 判分依据真能追到附件：material 类的 ref 指到的文件在 input 里存在
+      5) 判分依据可溯源：scoringBasis 非空 —— **按 `用途` 分松紧**（§7，2026-10-14）：
+         测试集严格（必须非空且可定位），训练集免掉人写的溯源清单、但机器产的逐字段明细必须在
+      6) 判分依据真能追到附件：material 类的 ref 指到的文件在 input 里存在（写了就得写对）
       7) 题面不泄标准答案：reference 里的数值不许出现在 prompt / 交付要求里
     """
     checks = []
+    purpose, purpose_declared = task_purpose(task)
 
     fx_ok, fx_detail, fx_fields = _check_fixtures(task)
     checks.append({"检查": "夹具实测==声明", "通过": fx_ok, "明细": fx_detail})
 
 
-    wd = tempfile.mkdtemp(prefix="ale_n6_")
-    harness.setup_env(task, wd)
-    harness.golden_solver(task, wd)
-    e1 = harness.evaluate(task, wd)
-    e2 = harness.evaluate(task, wd)
-    repro = e1.score == e2.score and not e1.fault
-    checks.append({"检查": "判分可复现", "通过": repro, "score": [e1.score, e2.score],
-                   **({"判分器故障": e1.fault[:300]} if e1.fault else {})})
+    repro_ok, repro_detail = _check_reproducible(task)
+    checks.append({"检查": "判分可复现", "通过": repro_ok, **repro_detail})
 
     ind_ok, ind_why = _check_independence(task)
     checks.append({"检查": "判分器独立(import 图干净)", "通过": ind_ok, "说明": ind_why})
@@ -44,10 +57,32 @@ def n6_verify(task, pass_threshold=1.0):
     checks.append({"检查": "数据已填(无 TODO 占位)", "通过": ready})
 
     basis = task.card.get("scoringBasis")
-    checks.append({"检查": "判分依据可溯源(scoringBasis 非空)", "通过": bool(basis),
-                   "条数": len(basis) if isinstance(basis, list) else 0})
+    n_basis = len(basis) if isinstance(basis, list) else 0
+    has_field_details = any((v or {}).get("details") for v in (fx_fields or {}).values())
+    if purpose == "训练集":
+        # §7 训练集放宽：免掉的是**人写的「判分依据溯源清单」**（每条 13~17 项逐项溯源，
+        # 最吃人力的那部分）。机器产的逐字段明细是判分器跑完自动落盘的、免费，所以不免 ——
+        # 诊断「模型哪个考点弱」靠它，不靠溯源清单。
+        basis_ok = has_field_details
+        basis_note = {"用途": purpose, "scoringBasis条数": n_basis,
+                      "逐字段明细": "有" if has_field_details else "无",
+                      "说明": ("训练集：scoringBasis 可留空（现 %d 条）；诊断靠机器产的逐字段明细"
+                               % n_basis) if has_field_details else
+                              "训练集也必须有机器产的逐字段明细（判分器一个判分点都没输出明细）"}
+    else:
+        basis_ok = n_basis > 0
+        basis_note = {"用途": purpose, "scoringBasis条数": n_basis,
+                      **({} if purpose_declared else
+                         {"说明": "任务卡未声明 `用途`，按测试集严判（§7）"})}
+    checks.append({"检查": "判分依据可溯源(scoringBasis 非空)", "通过": basis_ok,
+                   **basis_note})
 
-    tr_ok, tr_detail = _check_basis_traceable(task)
+    # 训练集允许留空，但**写了就得写对**：半截的 ref（只写个文件名/查不到的出处）在哪种
+    # 用途下都不算依据。空数组在训练集下直接放行，不借这道闸门把放宽的那一刀收回来。
+    if purpose == "训练集" and n_basis == 0:
+        tr_ok, tr_detail = True, ["训练集且 scoringBasis 为空：本项按 §7 跳过"]
+    else:
+        tr_ok, tr_detail = _check_basis_traceable(task)
     checks.append({"检查": "判分依据能追到附件(material.ref 可定位)", "通过": tr_ok,
                    "明细": tr_detail})
 
@@ -55,10 +90,40 @@ def n6_verify(task, pass_threshold=1.0):
     checks.append({"检查": "题面不泄标准答案", "通过": lk_ok, "明细": lk_detail})
 
     ok = all(c["通过"] for c in checks)
-    return ok, {"task_id": task.task_id, "checks": checks,
+    return ok, {"task_id": task.task_id, "用途": purpose, "checks": checks,
                 "_fixtureDetails": fx_fields}
 
 
+
+
+def _check_reproducible(task):
+    """判分可复现（§8 进库判定第 3 条）。
+
+    纯代码判分：同一份产物判两次，分数必须一致。
+    **大模型判分项例外（§9.4，2026-10-14 放宽）**：大模型判分本身不确定，同一份产物判两次
+    可能给出不同分，这条闸门会把它一律判成不合格 —— 于是「接受大模型判分」这个决定在程序
+    里落不了地。改法不是撤掉闸门，而是换判据：任务卡声明 `evaluation.llmJudged: true` 时
+    判 3 次、要求至少 2 次同分（多数票稳定）。固定温度与多次取多数由判分器自己实现
+    （契约 §9.4），这里只验「结果稳不稳」。
+    """
+    wd = tempfile.mkdtemp(prefix="ale_n6_")
+    harness.setup_env(task, wd)
+    harness.golden_solver(task, wd)
+    llm_judged = bool((task.card.get("evaluation") or {}).get("llmJudged"))
+    runs = [harness.evaluate(task, wd) for _ in range(3 if llm_judged else 2)]
+    scores = [r.score for r in runs]
+    fault = next((r.fault for r in runs if r.fault), "")
+    if llm_judged:
+        top = max(scores, key=scores.count)
+        ok, detail = scores.count(top) >= 2, {
+            "score": scores, "判法": "大模型判分：3 判取多数（§9.4 例外）",
+            "多数票": top, "票数": scores.count(top)}
+    else:
+        ok, detail = len(set(scores)) == 1, {
+            "score": scores, "判法": "纯代码判分：两判必须一致"}
+    if fault:
+        detail["判分器故障"] = fault[:300]
+    return ok and not fault, detail
 
 
 def n8_floor_audit(task, floor=0.0):
@@ -103,71 +168,107 @@ def n8_floor_audit(task, floor=0.0):
     return ok, detail
 
 
-def difficulty_gate(task):
-    """§6.3 入库门槛（难度）—— 原来 qc 的「进库」只查 N6/N8，难度靠人手动确认。
+_MD_REQUIRED = ("model", "toolset", "budget", "scorerVersion", "nRuns")
 
-    4 条数据时手动还行，几个人同时铺量就一定会把「进库=True」当成「这条合格」，
-    于是便宜模型能满分的水题混进来。这里按契约 §6.3 程序化判：
-      便宜档 glm-5.3-flash       fullPassRate 必须 = 0
-      前沿档 Claude Sonnet 5.5    fullPassRate ≤ 1/3
-    三条硬规矩（契约 §6.3）：
-      ① 门槛只认 agent 档（toolset=agent-file-tools），单发盲解只作预筛、不算数；
-      ② 边界补跑：fpr=0 → 3 跑即可；0<fpr≤1/3（擦线）必须补到 6 跑，否则靠运气过；
-      ③ 判分器版本必须对得上——改了判分器就等于换了考试，旧难度数字作废（§6.2 把
-         scorerVersion 钉进测量条目正是为此）。
-    未测 → 不通过（显式写「难度未测」，不是默默算过）。
+
+def _latest_agent_run(md, model, cur_ver):
+    """挑出「当前判分器下、该基准模型的最近一次 agent 档测量」，连同挑不出来的原因。
+
+    三条规矩沿用契约 §6.2/§6.3，一个字没放松（放开的只有难度本身，见 difficulty_tier）：
+      ① 只认 agent 档（toolset=agent-file-tools），单发盲解只作便宜预筛、不定级；
+      ② scorerVersion 必须等于任务卡当前值 —— 改了判分器就等于换了考试，旧数字作废；
+      ③ model/toolset/budget/scorerVersion/nRuns 缺任一项的条目不算数（换哪一项都不可比）。
     """
-    # 注意：下面第二列须是 measuredDifficulty.model 的小写形式（本函数按 .lower() 精确匹配）。
-    # 前沿档记录名为 "Claude Sonnet 5.5"（网关实收名，见契约 §6.3），小写即 "claude sonnet 5.5"。
-    tiers = (("便宜档", "glm-5.3-flash", lambda r: r == 0, "必须 = 0"),
-             ("前沿档", "claude sonnet 5.5", lambda r: r <= 1.0 / 3 + 1e-9, "≤ 1/3"))
+    hit = [e for e in md if str(e.get("model", "")).lower() == model
+           and str(e.get("scorerVersion", "")).strip() == cur_ver
+           and str(e.get("toolset", "")) == "agent-file-tools"
+           and not [k for k in _MD_REQUIRED if not e.get(k)]]
+    if hit:
+        return sorted(hit, key=lambda x: str(x.get("measuredAt", "")))[-1], ""
+    same_model = [e for e in md if str(e.get("model", "")).lower() == model]
+    cur_any = [e for e in same_model
+               if str(e.get("scorerVersion", "")).strip() == cur_ver]
+    if cur_any:
+        return None, ("只有单发预筛（toolset=%s）或条目缺字段，无当前 agent 档测量"
+                      % [e.get("toolset") for e in cur_any])
+    if same_model:
+        return None, ("判分器已改版(当前 %s)，旧测量 scorerVersion=%s 不再算数，需重测"
+                      % (cur_ver, [e.get("scorerVersion") for e in same_model]))
+    return None, "未测（该基准模型没有任何测量条目）"
+
+
+def _md_row(e):
+    return {k: e.get(k) for k in ("model", "toolset", "fullPassRate", "nRuns",
+                                  "meanScore", "scorerVersion", "measuredAt")}
+
+
+def difficulty_tier(task):
+    """§6.3 难度分级 —— 难度从「准入门槛」改成「标签」（2026-10-14 口径变更）。
+
+    旧规则是「便宜档满分率必须 = 0 **且** 前沿档 ≤ 1/3，达不到＝太软、退回或淘汰」。
+    那是一道硬过滤，会把所有不难的题扔掉 —— 而新目标（ALE 高仿训练语料 + 自用标尺）
+    正要这些题：500 条要分 3–4 级，不必都难到顶。所以难度不再参与进库判定（§8），
+    改成算一个 tier 标签。**质量闸门一条没放松**：判分可复现、判分器独立、四档夹具
+    自证、两档地板 ≤ 0、题面不泄答案、依据可定位，全在 N6/N8 原地不动。
+
+    分级只用两档满分率（都已在测，不额外花钱）：
+      便宜档 fpr ≥ 2/3                    → L1 入门
+      0 < 便宜档 fpr < 2/3                → L2 基础
+      便宜档 fpr = 0 且 前沿档 fpr > 1/3  → L3 进阶
+      便宜档 fpr = 0 且 前沿档 fpr ≤ 1/3  → L4 困难
+
+    **L1/L2 由便宜档单独定死**（另外三级都要求便宜档 = 0，互斥），只有 L3/L4 的分界要
+    前沿档。缺前沿档时给**推定级 `L3+`**（`级别来源=推定`）而不是「未测」—— 这正是
+    §6.5「全量跑便宜档、只给测试集与抽样跑前沿档」那条省钱路线的程序化形式：前沿档
+    13.7 元/条，500 条全跑是 6850 元，而它只用来切 L3|L4 这一刀。
+
+    返回 `(可判定?, 明细)`。可判定只要求有一条当前判分器下的 agent 档便宜档测量；
+    连这个都没有＝未测，**未测不是 L1**（水题也得测出来才算水题）。
+    """
+    base = {"task_id": task.task_id, "tier": None, "级别来源": "未测", "可判定": False}
     md = task.card.get("measuredDifficulty")
     if not isinstance(md, list) or not md:
-        return False, {"task_id": task.task_id, "通过": False,
-                       "说明": "难度未测（measuredDifficulty 为空）——未测 ≠ 达标"}
+        return False, {**base, "说明": "难度未测（measuredDifficulty 为空）——未测 ≠ L1"}
     cur_ver = str(((task.card.get("evaluation") or {}).get("scorerVersion") or "")).strip()
     if not cur_ver:
-        return False, {"task_id": task.task_id, "通过": False,
-                       "说明": "evaluation.scorerVersion 未声明：无法判断难度数字是不是"
-                               "当前判分器测的（契约 §6.2）"}
-    rows, ok_all = [], True
-    for tier, model, rule, desc in tiers:
-        # §6.3：门槛只认 agent 档。单发盲解（single-shot-blind）只作便宜预筛、不算入库依据。
-        hit = [e for e in md if str(e.get("model", "")).lower() == model
-               and str(e.get("scorerVersion", "")).strip() == cur_ver
-               and str(e.get("toolset", "")) == "agent-file-tools"]
-        if not hit:
-            same_model = [e for e in md if str(e.get("model", "")).lower() == model]
-            cur_any = [e for e in same_model
-                       if str(e.get("scorerVersion", "")).strip() == cur_ver]
-            if cur_any:   # 有当前版本的测量，但都是单发预筛、没有 agent 档
-                why = ("只有单发预筛（toolset=%s），缺 agent 档测量——契约 §6.3 门槛只认 "
-                       "agent-file-tools" % [e.get("toolset") for e in cur_any])
-            elif same_model:  # 有过 agent 档测量，但判分器已改版
-                why = ("判分器已改版(当前 %s)，旧测量 scorerVersion=%s 不再算数，需重测"
-                       % (cur_ver, [e.get("scorerVersion") for e in same_model]))
-            else:
-                why = "未测"
-            rows.append({"档": tier, "基准模型": model, "通过": False, "说明": why})
-            ok_all = False
-            continue
-        e = sorted(hit, key=lambda x: str(x.get("measuredAt", "")))[-1]  # 取最近一次
-        fpr, n = e.get("fullPassRate"), e.get("nRuns") or 0
-        miss = [k for k in ("model", "toolset", "budget", "scorerVersion", "nRuns")
-                if not e.get(k)]
-        # §6.3 边界补跑：fpr=0 → 3 跑即可；0<fpr≤1/3（擦线）必须补到 6 跑。
-        need_n = 3 if (isinstance(fpr, (int, float)) and fpr == 0) else 6
-        ok = isinstance(fpr, (int, float)) and rule(fpr) and n >= need_n and not miss
-        note = ({"说明": "nRuns=%d < %d（契约 §6.3：fpr=0 需 3 跑，0<fpr≤1/3 需补到 6 跑）"
-                         % (n, need_n)} if n < need_n else {})
-        rows.append({"档": tier, "基准模型": model, "fullPassRate": fpr, "nRuns": n,
-                     "meanScore": e.get("meanScore"), "toolset": e.get("toolset"),
-                     "scorerVersion": e.get("scorerVersion"), "门槛": desc, "通过": ok,
-                     **({"缺字段": miss} if miss else {}),
-                     **note})
-        ok_all = ok_all and ok
-    return ok_all, {"task_id": task.task_id, "通过": ok_all, "判分器版本": cur_ver,
-                    "各档": rows}
+        return False, {**base, "说明": "evaluation.scorerVersion 未声明：无法判断难度数字"
+                                       "是不是当前判分器测的（契约 §6.2）"}
+    cheap, cheap_why = _latest_agent_run(md, CHEAP_MODEL, cur_ver)
+    front, front_why = _latest_agent_run(md, FRONTIER_MODEL, cur_ver)
+    base = {**base, "判分器版本": cur_ver,
+            "便宜档": _md_row(cheap) if cheap else {"缺": cheap_why},
+            "前沿档": _md_row(front) if front else {"缺": front_why}}
+    cfpr = cheap.get("fullPassRate") if cheap else None
+    if not isinstance(cfpr, (int, float)):
+        return False, {**base, "说明": "定不了级：缺便宜档 agent 测量 —— %s。"
+                                       "补一次便宜档 agent 跑（约 0.35 元）即可定级" % cheap_why}
+
+    ffpr = front.get("fullPassRate") if front else None
+    hedge = []
+    if cfpr >= L1_FLOOR:
+        tier, note = "L1", "便宜档满分率 %.4f ≥ 2/3：便宜模型就能做出来，前沿档不必跑" % cfpr
+    elif cfpr > 0:
+        tier, note = "L2", ("0 < 便宜档满分率 %.4f < 2/3：便宜档单独定级（L1/L3/L4 都被排除）"
+                            % cfpr)
+    elif isinstance(ffpr, (int, float)):
+        tier = "L4" if ffpr <= L4_CEIL else "L3"
+        note = "便宜档 0 + 前沿档 %.4f %s 1/3" % (ffpr, "≤" if tier == "L4" else ">")
+    else:
+        tier, note = "L3+", "便宜档满分率 = 0，但缺当前前沿档 agent 测量，L3/L4 分不开"
+        hedge.append("缺前沿档：%s" % front_why)
+
+    # 擦线补跑（沿用旧 §6.3 的 nRuns 纪律，判据随边界位置变）：3 跑只能落在 0/⅓/⅔/1，
+    # 而分级边界恰好在 ⅔（L1|L2）与 ⅓（L3|L4）——擦线的题会靠运气落到相邻一级。
+    # 现在擦线不再「不通过」，而是降成推定级：标签照给，但别拿它当实测数字用。
+    cn = cheap.get("nRuns") or 0
+    if abs(cfpr - 2.0 / 3) < 1e-9 and cn < 6:
+        hedge.append("便宜档 fpr 正落在 L1|L2 边界 2/3 上而 nRuns=%d < 6，需补跑" % cn)
+    if tier in ("L3", "L4") and abs(ffpr - 1.0 / 3) < 1e-9 and (front.get("nRuns") or 0) < 6:
+        hedge.append("前沿档 fpr 正落在 L3|L4 边界 1/3 上而 nRuns=%d < 6，需补跑"
+                     % (front.get("nRuns") or 0))
+    src = "推定" if hedge else "实测"
+    return True, {**base, "tier": tier, "级别来源": src, "可判定": True,
+                  "说明": note, **({"待补": hedge} if hedge else {})}
 
 
 

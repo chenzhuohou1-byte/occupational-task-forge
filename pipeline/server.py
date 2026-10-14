@@ -41,7 +41,10 @@ def _tasks_payload():
         c = t.card
         out.append({"task_id": t.task_id, "dir": os.path.relpath(t.dir, CFG.tasks_dir),
                     "领域": c.get("领域", ""), "任务名": c.get("任务名", ""),
-                    "难度层": c.get("难度层", ""), "prompt": c.get("prompt", "")})
+                    # `难度层` 是 §3 废止字段（自由文本难度标签），所有卡上都是空的，
+                    # 看板那颗芯片一直显示「-」。换成 §6.3 的 tier 与 §7.1 的 用途。
+                    "tier": c.get("tier") or "", "用途": c.get("用途") or "",
+                    "prompt": c.get("prompt", "")})
     return out
 
 
@@ -84,7 +87,11 @@ def _stats_payload():
 
 
 def _latest_qc_map():
-    """取最近一次 runs/*/qc.json 的 task_id→进库，供看板显示真实进库状态（截至上次 qc 跑）。"""
+    """取最近一次 runs/*/qc.json 的 task_id→{进库, tier, 级别来源}，供看板显示真实状态。
+
+    tier / 级别来源 取 qc 现算的那一份、不读任务卡上的 `tier` 字段：卡上的值是回填的展示值，
+    可能比最近一次 qc 旧（判分器一改版旧难度就作废了，§6.3）。
+    """
     root = CFG.runs_dir
     if not os.path.isdir(root):
         return {}, None
@@ -96,24 +103,34 @@ def _latest_qc_map():
             for r in j.get("结果", []):
                 tid = r.get("task_id") or (r.get("N6") or {}).get("task_id")
                 if tid:
-                    m[tid] = r.get("进库")
+                    m[tid] = {"进库": r.get("进库"), "tier": r.get("tier"),
+                              "级别来源": r.get("级别来源"),
+                              "用途": r.get("用途")}
             return m, name
     return {}, None
 
 
 def _board_payload():
-    """进度看板：每条任务的负责人 / 上次 qc 进库 / N7 两档 / scoringBasis / 夹具档数（全读 task_card，不现跑）。"""
+    """进度看板：每条任务的负责人 / 上次 qc 进库 / tier / 用途 / N7 两档 / scoringBasis / 夹具档数
+    （全读 task_card 与上次 qc 产物，不现跑）。"""
     qc_map, qc_run = _latest_qc_map()
     rows = []
     for t in discover_tasks(CFG.tasks_dir):
         c = t.card
         ev = c.get("evaluation", {}) or {}
-        md = [{"model": e.get("model", ""), "fullPassRate": e.get("fullPassRate"),
+        # 测量档要能看出区别：单发盲解与 agent 档混排在一起，光看 fullPassRate 分不清，
+        # 而只有 agent 档参与定级（§6.3）。
+        md = [{"model": e.get("model", ""), "toolset": e.get("toolset", ""),
+               "fullPassRate": e.get("fullPassRate"),
                "meanScore": e.get("meanScore")} for e in (c.get("measuredDifficulty") or [])]
+        q = qc_map.get(t.task_id) or {}
         rows.append({
             "task_id": t.task_id, "领域": c.get("领域", ""), "任务名": c.get("任务名", ""),
             "负责人": c.get("负责人") or (c.get("元数据") or {}).get("负责人") or "",
-            "qc进库": qc_map.get(t.task_id),
+            "qc进库": q.get("进库"),
+            "tier": q.get("tier") or c.get("tier"),
+            "级别来源": q.get("级别来源"),
+            "用途": q.get("用途") or c.get("用途") or "",
             "N7": md,
             "scoringBasis": len(c.get("scoringBasis") or []),
             "夹具档数": len(ev.get("fixtureScores") or {}),

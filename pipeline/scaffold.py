@@ -454,6 +454,11 @@ def scaffold_task(spec, tasks_dir):
             "说明": "脚手架自动填的只有可数项（输入份数/交付文件数/口径条数）；steps 等需作者补。先验复杂度不是难度（判分契约 §6.1）。",
         },
         "measuredDifficulty": [],
+        # tier 由 measuredDifficulty 机器派生、不许手写（§6.3）：qc 每次重算，这里只占位。
+        "tier": None,
+        # §7.1 用途：训练集 / 测试集，决定 scoringBasis 那道闸门的松紧。脚手架默认
+        # 填「测试集」（严的那一档）——漏改只会被多拦一道，不会把放宽悄悄给出去。
+        "用途": spec.get("用途", "测试集"),
         "evaluation": {
             "type": "numeric_tabular",
             "artifactModes": ["structured_tabular"],
@@ -501,7 +506,10 @@ def scaffold_task(spec, tasks_dir):
         _write(p, _placeholder(fn))
         todos.append(os.path.relpath(p, tasks_dir))
 
-    todos.append("填 scoringBasis（判分契约 §7：每个判分点标 material/external 出处；空数组不可进库）")
+    todos.append("确认 用途（训练集/测试集，判分契约 §7.1）：脚手架默认填「测试集」= 严格档，"
+                 "scoringBasis 必须非空且可定位；是训练集就改成「训练集」")
+    todos.append("填 scoringBasis（判分契约 §7：每个判分点标 material/external 出处；"
+                 "测试集空数组不可进库，训练集可留空但写了就得可定位）")
     todos.append("填 元数据.生成方式（程序化生成 / 人工构造 / 混合；数据集 schema 的「生成方式」列读它）")
     todos.append("造 output_test_random/ 与 output_test_partial/ 夹具（判分契约 §4；需先填好标准答案）")
 

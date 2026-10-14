@@ -10,8 +10,9 @@
   2) 程序化地板合成自测（键名/表头/行键保留、值全变）
   3) agent 档动作循环自测（含「协议噪声 → 测量故障」这条诚实性路径）
   4) N7 runner 控制流自测（mock provider，不触网）
-  5) 对自带 `tasks/_demo` 跑 qc：N6/N8 必须全过；难度门槛必须**不过**
-     （demo 故意是水题，难度未测 → 不该进库。这一条同时在回归「难度闸真的在拦」）
+  5) 难度分级 / 用途闸门 / 大模型判分多数票 单元自测（纯函数，不触网不花钱）
+  6) 对自带 `tasks/_demo` 跑 qc：N6/N8 必须全过；难度必须**定不出级**
+     （demo 故意是水题且 measuredDifficulty 为空 → 未测 ≠ L1 → 不该进库）
 """
 import json
 import os
@@ -53,15 +54,15 @@ def check_demo_qc():
                    % [c["检查"] for c in row["N6"]["checks"] if not c["通过"]])
     if not row.get("N8通过"):
         bad.append("N8 地板应为 0，实际：%s" % row["N8"].get("各档地板"))
-    if row.get("难度门槛通过"):
-        bad.append("难度门槛本该不过（demo 是水题、measuredDifficulty 为空）却判过了"
-                   "——难度闸失效")
+    if row.get("难度可判定"):
+        bad.append("难度本该定不出级（demo 是水题、measuredDifficulty 为空）却给出了 "
+                   "tier=%s —— 未测 ≠ L1" % row.get("tier"))
     if row.get("进库"):
         bad.append("demo 不该可进库")
     if bad:
         print("✗ _demo qc 行为不符预期：\n  - " + "\n  - ".join(bad))
         return False
-    print("✓ _demo qc 闸门行为正确（N6/N8 过、难度未测 → 不进库）")
+    print("✓ _demo qc 闸门行为正确（N6/N8 过、难度未测 → 定不出级 → 不进库）")
     return True
 
 
@@ -77,6 +78,7 @@ def main():
              {"ALE_TASKS_DIR": os.path.join(ROOT, "tasks"),
               "ALE_RUNS_DIR": os.path.join(ROOT, ".ci-runs"),
               "N7_TASK": "demo-procurement-tally-001"})[0],
+        _run("难度分级/用途闸门自测", ["tests/test_gates.py"])[0],
         check_demo_qc(),
     ]
     n_ok = sum(1 for x in results if x)
