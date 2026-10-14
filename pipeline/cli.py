@@ -76,6 +76,8 @@ def main(argv=None):
     pg.add_argument("--rounds", type=int, default=3, help="返修预算：最多几轮，仍不过即作废")
     pg.add_argument("--n", type=int, default=200, help="crosscheck 世界数")
     pg.add_argument("--call-gap", type=float, default=30.0, help="同一模型两次调用的最小间隔秒数（防 429）")
+    pg.add_argument("--refs", help="参考资料目录（人工抓好的真实口径材料 + 来源.json），"
+                                   "给了就要求规则.md 声明「## 引用来源」并逐字核验")
 
     pn = sub.add_parser("build-case-batch",
                         help="连跑 N 次 build-case，实测产出率（每次尝试产出一条可用数据的比率）")
@@ -148,7 +150,8 @@ def main(argv=None):
         from . import casegen_build
         return casegen_build.run_build(args.subdomain, args.out, args.solve_model,
                                        args.solve2_model, args.rounds, args.n,
-                                       resume=args.resume, call_gap=args.call_gap)
+                                       resume=args.resume, call_gap=args.call_gap,
+                                       refs=args.refs)
 
     if args.cmd == "build-case-batch":
         from . import casegen_build

@@ -21,14 +21,32 @@ import os
 HERE = os.path.dirname(os.path.abspath(__file__))
 _PATH = os.path.join(HERE, "subdomains.json")
 
-# 暂时做不了的子域（方向调整文档第六节）：留槽位、标原因，不参与派活。
-# 原因分类决定解法与催办对象，别混成一个「空」。
+# 暂时做不了的子域。留槽位、标原因，不参与派活。
+# 口径依据 `ALE领域与公开源_建题可行性.md`（本机实测公开源 + 软件开源性）——注意它与
+# 「方向调整文档第六节」说的不是一回事：那边说的是**跑 ALE 自己那些任务**要 x86 Linux 虚拟机，
+# 而我们是**自己造题**，Blender/Inkscape/KiCad/Qiskit 在 arm64 上原生可跑，故不属做不了。
 BLOCKED = {
-    "8.1": ("图形桌面", "Blender/KiCad 类，需 x86 Linux + 虚拟化；开发机 arm64，机器 2026-10-14 申请未批"),
-    "8.2": ("图形桌面", "Inkscape/矢量设计类，同上"),
-    "8.4": ("图形桌面", "音视频后期类，需桌面工具链"),
-    "9.7": ("专用SDK", "需 Qiskit 等量子计算栈，host 上可行性待评估"),
-    "1.11": ("仿真环境", "需机器人仿真器，优先级最低"),
+    "8.4": ("授权软件", "ALE 原题用 Cubase/Dorico（需授权）；音频文件可自造，待评估后再开"),
+}
+
+# 可派活但取数要绕的子域：源被挡或软件较重，派活前先看这条。
+SOURCE_NOTES = {
+    "6.1": "SEC（sec.gov）本机被挡，换 data.gov / Kaggle 取数",
+    "6.4": "SEC 被挡，同 6.1",
+    "9.6": "Docker/k8s/Terraform 均开源，但嵌套 Docker 需本地 Docker 环境",
+    "1.11": "MuJoCo 开源可用；Isaac 较重",
+    "2.1": "多数 pip 可装；DFT 类计算重",
+    "2.2": "RDKit 可 pip；QE/BerkeleyGW 重，必要时降级",
+    "2.3": "Astropy 可 pip；MAST/Vizier 可达性待再探",
+    "4.1": "大医学影像数据集多为门控（TCIA/NIH 部分），先用可达小样本",
+    "4.2": "同 4.1，门控数据",
+    "4.5": "同 4.1，门控数据",
+    "1.1": "PLAXIS/Civil3D/PowerMill/Moldex3D 需授权；可换 FreeCAD/ezdxf/EnergyPlus 等开源替代",
+    "1.3": "同 1.1，授权软件为主；地理部分可用 Natural Earth/USGS",
+    "1.5": "同 1.1，授权软件为主",
+    "1.6": "EnergyPlus/FDS 开源可用；部分工具需授权",
+    "8.1": "Blender 开源、arm64 原生可跑；ALE 原题里的 After Effects 部分需授权，避开",
+    "3.1": "RDKit/Biopython 可 pip；Amber+CUDA+SLURM 类需 GPU，避开",
 }
 
 # 上游 subdomain_id 的编号空洞。名称只存在于未公开的 1490 条任务里，无从还原。
@@ -144,19 +162,22 @@ def _rebuild(meta_dir, out_path=_PATH):
         s = subs.setdefault(x["sid"], {
             "domain_id": x["did"], "code": x["scode"], "name": x["sname"],
             "ale_n": 0, "enabled": True, "blocked_by": None, "blocked_note": None,
-            "ale_examples": []})
+            "source_note": None, "ale_examples": []})
         s["ale_n"] += 1
         s["ale_examples"].append({"title": x["title"], "summary": x["summary"]})
 
     for sid, (why, note) in BLOCKED.items():      # 做不了的：留槽位 + 留样例，机器到了直接填
         if sid in subs:
             subs[sid].update(enabled=False, blocked_by=why, blocked_note=note)
+    for sid, note in SOURCE_NOTES.items():        # 可派活但取数要绕
+        if sid in subs:
+            subs[sid]["source_note"] = note
     for sid, did in GAPS.items():                 # 编号空洞：名称无从还原，占位
         subs.setdefault(sid, {
             "domain_id": did, "code": None, "name": None, "ale_n": 0, "enabled": False,
             "blocked_by": "ALE未公开",
             "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
-            "ale_examples": []})
+            "source_note": None, "ale_examples": []})
 
     data = {"_provenance": {
         "来源": "agents-last-exam-metadata/task_cards.parquet（%d 行，%d 行有 subdomain_id）"
@@ -196,6 +217,10 @@ def _selftest():
     n_on = len(subdomains(enabled_only=True))
     check(n_on == 57 - len(GAPS) - len(BLOCKED),
           "可派活子域 %d 个（57 − 空洞 %d − 做不了 %d）" % (n_on, len(GAPS), len(BLOCKED)))
+    check(all(subs[s]["source_note"] for s in SOURCE_NOTES if s in subs),
+          "取数要绕的 %d 个子域都带 source_note（派活前先看）" % len(SOURCE_NOTES))
+    check(subs["8.1"]["enabled"] and subs["9.7"]["enabled"] and subs["8.2"]["enabled"],
+          "8.1/8.2/9.7 可派活：Blender/Inkscape/Qiskit 都是开源且 arm64 原生可跑")
     tx = taxonomy("6.1")
     check(tx["domain_code"] == "business_finance" and tx["subdomain_code"] == "accounting"
           and set(tx) == {"domain_id", "domain_code", "subdomain_id", "subdomain_code",

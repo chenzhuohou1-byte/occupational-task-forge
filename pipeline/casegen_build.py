@@ -29,9 +29,14 @@ EXAMPLE_CASE = os.path.join(_HERE, "crosscheck_cases", "good")
 LOGIC_FILES = ("参数生成器.py", "solve.py", "断言.py")   # 第①步：逻辑三件
 MAT_FILES = ("物化.py",)                                 # 第②步：物化（含大 INSTANCE）
 CODE_FILES = LOGIC_FILES + MAT_FILES                     # 完整案例代码（校验/返修按这个全集）
+REFS_DIR = "参考资料"          # 人工抓来的真实口径材料（--refs 拷进来），含 来源.json
+REFS_MANIFEST = "来源.json"
+REFS_SECTION = "## 引用来源"   # 规则.md 里声明借用了哪些真实值、各自出自哪份材料
 # 文件块用显式标记而非 ``` 围栏：规则.md 里本身就有 ``` 代码块，套围栏会被截断
 _FILE_RE = re.compile(r"<<<FILE\s+([^>\n]+?)\s*>>>\n(.*?)<<<END>>>", re.S)
 _FENCE_RE = re.compile(r"^\s*```[^\n]*\n(.*?)\n?```\s*$", re.S)
+# 「- <值> ← <文件名>」一行一条，值与文件名都允许带空格
+_CITE_RE = re.compile(r"^\s*[-*]\s*(.+?)\s*(?:←|<-|<=)\s*(\S.*?)\s*$", re.M)
 
 
 class CaseRejected(Exception):
@@ -244,11 +249,81 @@ def hardness_check(case_dir, spec=DEFAULT_HARDNESS, seed=0, world=None):
 
 
 # ---------------- 一轮校验 + 编排 ----------------
+def load_refs(case_dir):
+    """读 case/参考资料/：返回 ({文件名: 文本}, 来源清单)。目录不存在就返回空——纯合成路径不受影响。"""
+    d = os.path.join(case_dir, REFS_DIR)
+    if not os.path.isdir(d):
+        return {}, []
+    texts, manifest = {}, []
+    for fn in sorted(os.listdir(d)):
+        p = os.path.join(d, fn)
+        if not os.path.isfile(p):
+            continue
+        try:
+            txt = open(p, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            continue
+        if fn == REFS_MANIFEST:
+            try:
+                manifest = json.loads(txt)
+            except ValueError:
+                manifest = []
+            continue
+        texts[fn] = txt
+    return texts, manifest
+
+
+def refs_trace_check(case_dir):
+    """逐字回溯闸门：规则.md 声明借用的每个真实值，必须在对应参考资料原文里逐字命中。
+
+    为什么靠显式声明而不是扫规则里的数字——规则.md 本来就满是行数、字段序号、小数位数，
+    正则扫数字会把所有题都误挡。让模型自己在「## 引用来源」里列「值 ← 文件名」，再逐条
+    核验，才是机械可判的。被查对象从「agent 编造证据」换成「出题模型编造口径」，机制同
+    参考_评分体系规范 的证据逐字回溯。
+
+    没有参考资料时返回 None（不设此门）。
+    """
+    texts, _ = load_refs(case_dir)
+    if not texts:
+        return None
+    rules_p = os.path.join(case_dir, "规则.md")
+    if not os.path.isfile(rules_p):
+        return "缺 规则.md"
+    rules = _read(rules_p)
+    if REFS_SECTION not in rules:
+        return ("给了参考资料，但 规则.md 里没有「%s」一节。请新增该节，逐条列出你从参考资料"
+                "借用的真实值，每行一条，格式：`- <值> ← <参考资料文件名>`。"
+                "可用的参考资料：%s" % (REFS_SECTION, "、".join(sorted(texts))))
+    body = rules.split(REFS_SECTION, 1)[1]
+    body = re.split(r"\n#{1,3} ", body, 1)[0]
+    cites = _CITE_RE.findall(body)
+    if not cites:
+        return ("「%s」一节里解析不到任何条目。每行一条，格式：`- <值> ← <参考资料文件名>`。"
+                "可用的参考资料：%s" % (REFS_SECTION, "、".join(sorted(texts))))
+    bad = []
+    for val, src in cites:
+        v = val.strip().strip("`“”\"'")
+        if not v:
+            continue
+        if src not in texts:
+            bad.append("「%s」声明出自 %r，但参考资料里没有这个文件（可用：%s）"
+                       % (v, src, "、".join(sorted(texts))))
+        elif v not in texts[src]:
+            bad.append("「%s」在 %s 原文里找不到（逐字比对）——真实口径不许自己编，"
+                       "请改成原文里确有的值，或把它从本节移走（合成值不该列在这里）" % (v, src))
+    if bad:
+        return "引用来源逐字回溯不通过：\n- " + "\n- ".join(bad[:12])
+    return None
+
+
 def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, subdomain=None):
     """返回 (stage, problem, info)；problem 为 None 表示本轮全过。"""
     err = smoke(case_dir)
     if err:
         return "smoke", "冒烟失败：\n" + err, None
+    err = refs_trace_check(case_dir)      # 给了参考资料才设此门
+    if err:
+        return "refs", err, None
     gate_on = any(dataclasses.astuple(hardness)[:5])
     world = None
     try:
@@ -416,17 +491,43 @@ def _ex(name):
     return _read(os.path.join(EXAMPLE_CASE, name))
 
 
-def rules_messages(subdomain):
+def _refs_block(refs, manifest, per_file=6000):
+    """参考资料注入段。真实口径必须逐字采用，业务流水仍然合成——这样 200 世界与模板家族都保住。"""
+    if not refs:
+        return ""
+    src = {}
+    for m in manifest if isinstance(manifest, list) else []:
+        if isinstance(m, dict) and m.get("file"):
+            src[m["file"]] = "；".join(
+                str(m[k]) for k in ("说明", "public_source_url", "抓取日期") if m.get(k))
+    parts = [
+        "\n## 参考资料（真实公开源，已冻结快照）\n",
+        "下面每份材料都是从真实公开源抓来的原文。**口径层必须逐字采用、一个数都不许自己编**：\n"
+        "标准/分类定义、编码、限值、费率、系数、分档阈值、字段名与量表计分规则，凡能在参考资料里"
+        "找到的就照抄原文；**业务流水仍然由参数生成器合成**（这样才能产出多个世界）。\n"
+        "并且必须在 规则.md 里新增一节「%s」，逐条声明你借用了哪些真实值、各自出自哪份材料，"
+        "每行一条，格式：\n`- <值> ← <参考资料文件名>`\n"
+        "机器会逐字核验这一节：命不中原文即退回。合成出来的值**不要**列进这一节。\n" % REFS_SECTION,
+    ]
+    for fn, txt in refs.items():
+        head = "### %s" % fn + ("（%s）" % src[fn] if fn in src else "")
+        body = txt if len(txt) <= per_file else txt[:per_file] + "\n…（已截断，只摘前 %d 字符）" % per_file
+        parts.append("%s\n```\n%s\n```\n" % (head, body))
+    return "\n".join(parts)
+
+
+def rules_messages(subdomain, refs=None, manifest=None):
     h = DEFAULT_HARDNESS
     return [{"role": "system", "content": SOLVE_SYSTEM}, {"role": "user", "content": (
         "【步骤:规则】为下面这个 ALE 子域设计一个 numeric_tabular 范式的闭世界核算任务，写出 规则.md。\n\n"
-        "%s\n\n硬要求：\n"
+        "%s\n%s\n硬要求：\n"
         "1. 至少 %d 份**独立材料**（如 标准/限值表 + 业务明细 + 登记/委托/台账），每份材料将来单独成一个附件文件，"
         "不得合并成一个文件；计算必须跨材料按关联键 join；\n"
         "2. 规模：业务明细不少于 %d 行、标准/参照表不少于 %d 条（数据由参数生成器产出，规则里只写结构）；\n"
         "3. 「## 材料」一节给出世界参数的精确 JSON 结构与字段名（出题方与独立复核员都只能据此取数），"
         "并写明每份材料对应哪个附件文件；\n"
-        "4. 全部费率/阈值/封顶/判定口径写进规则，答案由规则唯一确定，不引用外部法规或常识；\n"
+        "4. 全部费率/阈值/封顶/判定口径写进规则，答案由规则唯一确定，不引用规则外的法规或常识"
+        "（给了参考资料时，口径值照抄参考资料原文，并在「%s」里声明出处）；\n"
         "5. 「## 特殊情形处理」一节至少 %d 类特殊情形，并写清处理语义，从这些杠杆里选（越多越好）："
         "跨材料关联键写法不一致需规范化（前导零/大小写/全半角/首尾空格，规则写明规范化方法）、单位混用需换算、"
         "中间扣除或校正、需要自己发现的条目（重复登记/作废/未备案/明细里有而登记里没有）、边界相等与封顶保底；"
@@ -436,10 +537,12 @@ def rules_messages(subdomain):
         "{\"样品编号\": \"S-007\", \"原因\": \"…\"}）；\n"
         "7. 「## 输出」一节明确返回 JSON 的结构与字段名；对象数组第一个字段是行键；"
         "集合语义的数组注明「顺序不计分」；金额保留 2 位小数；\n"
-        "8. 纯虚构、可公开。\n\n下面是另一个子域的范例，只示结构、不要照抄内容；"
+        "8. 纯虚构、可公开（参考资料里的真实口径除外，它们按上面的要求照抄并声明出处）。\n\n"
+        "下面是另一个子域的范例，只示结构、不要照抄内容；"
         "**范例规模很小、只有两份材料，你的案例必须满足上面的规模与特殊情形要求**：\n%s\n"
         "只输出：\n<<<FILE 规则.md>>>\n（规则原文）\n<<<END>>>") % (
-            subdomains.anchor(subdomain), h.min_files, h.min_main_rows, h.min_ref_rows,
+            subdomains.anchor(subdomain), _refs_block(refs or {}, manifest),
+            h.min_files, h.min_main_rows, h.min_ref_rows, REFS_SECTION,
             h.min_traps, _fblock("规则.md", _ex("规则.md")))}]
 
 
@@ -542,6 +645,12 @@ class LLMProducer:
             self.log("  （同一模型调用间隔，等 %.0fs 防 429）" % wait)
             time.sleep(wait)
         t0 = time.time()
+        # 调用前先打一行：旧代码只在返回后记日志，于是「卡在网关」和「跑得慢」在日志里
+        # 长得一模一样（实测跑批有 25 分钟不出任何新行）。超时上限一并打出来，便于判断该等多久。
+        self.log("  → %s 调用 %s（prompt %d 字符，超时上限 %ss）…" % (
+            step, getattr(llm, "model", "") or getattr(getattr(llm, "cfg", None), "model", "?"),
+            sum(len(m.get("content") or "") for m in messages),
+            os.environ.get("ALE_LLM_TIMEOUT", "默认")))
         try:
             res = llm.chat(messages)
         except Exception as e:  # noqa: BLE001 调用层的失败（429/超时/5xx）一律算基础设施故障
@@ -549,7 +658,7 @@ class LLMProducer:
                                                     or getattr(getattr(llm, "cfg", None), "model", ""), e))
         finally:
             self._last[id(llm)] = time.time()
-        self.log("  %s 完成：%.1f min，completion_tokens=%s，finish=%s" % (
+        self.log("  ← %s 完成：%.1f min，completion_tokens=%s，finish=%s" % (
             step, (time.time() - t0) / 60, res.completion_tokens, res.finish_reason))
         if self.cost:
             self.cost.add("casegen:" + step, res)
@@ -589,7 +698,11 @@ class LLMProducer:
                          % (step, retries + 1, "、".join(sorted(want))))
 
     def draft_rules(self, case_dir, subdomain):
-        files = self._call_files(self.solve_llm, "rules", rules_messages(subdomain), {"规则.md"})
+        refs, manifest = load_refs(case_dir)
+        if refs:
+            self.log("  （带 %d 份参考资料：%s）" % (len(refs), "、".join(sorted(refs))))
+        files = self._call_files(self.solve_llm, "rules",
+                                 rules_messages(subdomain, refs, manifest), {"规则.md"})
         _write_files(case_dir, files, {"规则.md"})
 
     def write_code(self, case_dir, rules_text, only_missing=False):
@@ -614,6 +727,10 @@ class LLMProducer:
     def repair(self, case_dir, problem):
         cur = {n: _read(os.path.join(case_dir, n)) for n in ("规则.md",) + CODE_FILES
                if os.path.isfile(os.path.join(case_dir, n))}      # 不给 solve2.py，免得锚定
+        # 参考资料也给（只读）：修「引用来源」那一节必须看得到原文，否则只能瞎猜
+        refs, _ = load_refs(case_dir)
+        for fn, txt in refs.items():
+            cur["%s/%s（只读，不要输出这个文件）" % (REFS_DIR, fn)] = txt[:6000]
         allow = {"规则.md"} | set(CODE_FILES)
         files = self._call_files(self.solve_llm, "repair", repair_messages(cur, problem), allow)
         return set(_write_files(case_dir, files, allow))
@@ -621,7 +738,7 @@ class LLMProducer:
 
 # ---------------- CLI ----------------
 def run_build(subdomain=None, out=None, solve_model="gpt-5.5", solve2_model="glm-5.3-flash",
-              rounds=3, n=200, seed=0, resume=None, call_gap=30.0):
+              rounds=3, n=200, seed=0, resume=None, call_gap=30.0, refs=None):
     """退出码：0 接收 / 1 作废（案例质量） / 2 配置问题 / 3 不是案例的错（网关故障或框架侧问题）。"""
     from .config import PipelineConfig
     from .cost import CostTracker
@@ -659,6 +776,23 @@ def run_build(subdomain=None, out=None, solve_model="gpt-5.5", solve2_model="glm
         sd["id"], scaffold._safe_seg(sd["code"] or "unknown", 20),
         time.strftime("%Y%m%d-%H%M%S")))
     os.makedirs(out, exist_ok=True)
+    if refs:      # 人工抓来的真实口径材料冻结进案例目录；抓取是一次性人工步骤，管线不联网取数
+        src = os.path.abspath(os.path.expanduser(refs))
+        if not os.path.isdir(src):
+            print("✗ --refs 不是目录：%s" % src, file=sys.stderr)
+            return 2
+        dst = os.path.join(out, "case", REFS_DIR)
+        os.makedirs(dst, exist_ok=True)
+        for fn in sorted(os.listdir(src)):
+            if os.path.isfile(os.path.join(src, fn)):
+                shutil.copy(os.path.join(src, fn), os.path.join(dst, fn))
+        got, man = load_refs(os.path.join(out, "case"))
+        if not got:
+            print("✗ --refs 目录里没有可读文件：%s" % src, file=sys.stderr)
+            return 2
+        _stderr_log("参考资料：%d 份（%s）%s" % (
+            len(got), "、".join(sorted(got)),
+            "" if man else "；注意 %s 缺失或解析失败，出处信息不会进 prompt" % REFS_MANIFEST))
     _stderr_log("产出目录：%s%s" % (out, "（续跑）" if resume else ""))
     cost = CostTracker()
     prod = LLMProducer(get_client(dataclasses.replace(cfg.llm, model=solve_model)),
@@ -907,6 +1041,46 @@ def _selftest():
         except InfraError as e:
             check("规则.md" in str(e) and len(pc.seen) == 2,
                   "协议守卫：重试用尽 → InfraError（不记作废、不消耗返修）")
+
+        # 参考资料输入口 + 引用来源逐字回溯闸门
+        def _refs_case(rules_body, ref_text="限值标准\nEL1 内部欺诈\nalpha 系数 0.15\n", tag="r"):
+            cd = os.path.join(tmp, "refs_" + tag, "case")
+            os.makedirs(os.path.join(cd, REFS_DIR))
+            with open(os.path.join(cd, "规则.md"), "w", encoding="utf-8") as f:
+                f.write(rules_body)
+            with open(os.path.join(cd, REFS_DIR, "标准表.txt"), "w", encoding="utf-8") as f:
+                f.write(ref_text)
+            with open(os.path.join(cd, REFS_DIR, REFS_MANIFEST), "w", encoding="utf-8") as f:
+                json.dump([{"file": "标准表.txt", "public_source_url": "https://example.gov/x",
+                            "抓取日期": "2026-10-14", "说明": "自测用"}], f, ensure_ascii=False)
+            return cd
+
+        check(refs_trace_check(os.path.join(tmp, "static", "case")) is None,
+              "没有参考资料 → 不设逐字回溯门（纯合成路径不受影响）")
+        cd = _refs_case("# 规则\n费率 0.15\n", tag="nosec")
+        msg = refs_trace_check(cd)
+        check(msg and REFS_SECTION in msg and "标准表.txt" in msg,
+              "给了参考资料但规则.md 没有「引用来源」一节 → 退回并列出可用材料")
+        cd = _refs_case("# 规则\n%s\n- 0.15 ← 标准表.txt\n- EL1 内部欺诈 ← 标准表.txt\n"
+                        % REFS_SECTION, tag="ok")
+        check(refs_trace_check(cd) is None, "声明的值能在参考资料原文里逐字命中 → 放行")
+        cd = _refs_case("# 规则\n%s\n- 0.18 ← 标准表.txt\n" % REFS_SECTION, tag="fake")
+        msg = refs_trace_check(cd)
+        check(msg and "0.18" in msg and "找不到" in msg,
+              "声明的值在原文里找不到 → 退回（挡住出题模型编造真实口径）")
+        cd = _refs_case("# 规则\n%s\n- 0.15 ← 不存在的表.txt\n" % REFS_SECTION, tag="badsrc")
+        msg = refs_trace_check(cd)
+        check(msg and "不存在的表.txt" in msg, "声明的出处文件不存在 → 退回")
+        refs, man = load_refs(cd)
+        blk_txt = _refs_block(refs, man)
+        check("标准表.txt" in blk_txt and "https://example.gov/x" in blk_txt
+              and REFS_SECTION in blk_txt and "业务流水仍然由参数生成器合成" in blk_txt,
+              "参考资料注入段带原文 + 出处 + 「口径照抄、流水合成」约束")
+        m = rules_messages("6.1", refs, man)[1]["content"]
+        check("## 参考资料" in m and "逐字采用" in m,
+              "规则步 prompt 注入参考资料（无参考资料时该段为空串）")
+        check("## 参考资料" not in rules_messages("6.1")[1]["content"],
+              "不给参考资料时 prompt 不含参考资料段")
 
         # 跑批统计：产出率两种口径（含/不含网关故障）
         rows = [{"status": "accepted", "耗时秒": 300, "成本RMB": 1.0, "网关重试次数": 0},

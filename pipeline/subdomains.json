@@ -73,6 +73,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "PLAXIS/Civil3D/PowerMill/Moldex3D 需授权；可换 FreeCAD/ezdxf/EnergyPlus 等开源替代",
       "ale_examples": [
         {
           "title": "Low-Thrust LEO To GEO Trajectory",
@@ -88,6 +89,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Analog Active",
@@ -111,6 +113,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "同 1.1，授权软件为主；地理部分可用 Natural Earth/USGS",
       "ale_examples": [
         {
           "title": "Bridge The Gap — Bridge + Site 3D Model",
@@ -138,6 +141,7 @@
       "enabled": false,
       "blocked_by": "ALE未公开",
       "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
       "ale_examples": []
     },
     "1.5": {
@@ -148,6 +152,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "同 1.1，授权软件为主",
       "ale_examples": [
         {
           "title": "gcode",
@@ -171,6 +176,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "EnergyPlus/FDS 开源可用；部分工具需授权",
       "ale_examples": [
         {
           "title": "MPC Control In Building",
@@ -190,6 +196,7 @@
       "enabled": false,
       "blocked_by": "ALE未公开",
       "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
       "ale_examples": []
     },
     "1.8": {
@@ -200,6 +207,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Chisel-to-Verilog Source Location Alignment",
@@ -219,6 +227,7 @@
       "enabled": false,
       "blocked_by": "ALE未公开",
       "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
       "ale_examples": []
     },
     "1.10": {
@@ -229,6 +238,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "SUMO Urban AM Peak Calibration",
@@ -245,9 +255,10 @@
       "code": "robotics",
       "name": "Robotics & Autonomous Systems",
       "ale_n": 3,
-      "enabled": false,
-      "blocked_by": "仿真环境",
-      "blocked_note": "需机器人仿真器，优先级最低",
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "MuJoCo 开源可用；Isaac 较重",
       "ale_examples": [
         {
           "title": "ABB IRB6700 Asset To URDF",
@@ -271,6 +282,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "多数 pip 可装；DFT 类计算重",
       "ale_examples": [
         {
           "title": "Exact Diagonalization of the J1-J2 Heisenberg Model",
@@ -290,6 +302,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "RDKit 可 pip；QE/BerkeleyGW 重，必要时降级",
       "ale_examples": [
         {
           "title": "Silicon GW Band Gap",
@@ -329,6 +342,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "Astropy 可 pip；MAST/Vizier 可达性待再探",
       "ale_examples": [
         {
           "title": "HST ACS/WFC Visit Reduction",
@@ -344,6 +358,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "CMIP6 Climate Emulation Pipeline",
@@ -359,6 +374,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "RDKit/Biopython 可 pip；Amber+CUDA+SLURM 类需 GPU，避开",
       "ale_examples": [
         {
           "title": "Amber Implicit-Solvent Minimization Workflow Construction",
@@ -390,6 +406,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Clinical Variant Annotation",
@@ -441,6 +458,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Cell Tracking Instance 1",
@@ -476,6 +494,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "RGI Contig Resistance Annotation",
@@ -495,6 +514,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "大医学影像数据集多为门控（TCIA/NIH 部分），先用可达小样本",
       "ale_examples": [
         {
           "title": "CT Geometry Calibration (Catphan Phantom)",
@@ -526,6 +546,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "同 4.1，门控数据",
       "ale_examples": [
         {
           "title": "ECG Rhythm Conduction Ptbxl",
@@ -553,6 +574,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Public Synthetic Healthcare Bias Audit Replication",
@@ -572,6 +594,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Epidemiology Forecast",
@@ -611,6 +634,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "同 4.1，门控数据",
       "ale_examples": [
         {
           "title": "CRF To SDTM Mapping Specification",
@@ -634,6 +658,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "C. elegans Neuron Tracking",
@@ -649,6 +674,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Scene3 Skullstrip QC",
@@ -668,6 +694,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "SEC（sec.gov）本机被挡，换 data.gov / Kaggle 取数",
       "ale_examples": [
         {
           "title": "Annual Report Full Extraction (1500 files)",
@@ -703,6 +730,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Basel Operational Risk BIA Classification",
@@ -718,6 +746,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Flowable BPMN Category Governance Restructuring L3",
@@ -749,6 +778,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "SEC 被挡，同 6.1",
       "ale_examples": [
         {
           "title": "GPT Actions Privacy & Policy Audit",
@@ -772,6 +802,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Internal Employee Agent Conversation Replay",
@@ -787,6 +818,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Digital Marketing A/B Test Analysis",
@@ -806,6 +838,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "American Option Pricing via Longstaff-Schwartz",
@@ -821,6 +854,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Odoo Supply-Chain End-To-End Workflow",
@@ -836,6 +870,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "M&A Filing Consistency Audit",
@@ -851,6 +886,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "BAC Arbitration Fee Calculation",
@@ -863,9 +899,10 @@
       "code": "animation_3d",
       "name": "3D, Animation & Interactive Media",
       "ale_n": 10,
-      "enabled": false,
-      "blocked_by": "图形桌面",
-      "blocked_note": "Blender/KiCad 类，需 x86 Linux + 虚拟化；开发机 arm64，机器 2026-10-14 申请未批",
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "Blender 开源、arm64 原生可跑；ALE 原题里的 After Effects 部分需授权，避开",
       "ale_examples": [
         {
           "title": "Blender Tabletop Workspace Reconstruction",
@@ -914,9 +951,10 @@
       "code": "graphic_design",
       "name": "Graphic, Visual & Product Design",
       "ale_n": 2,
-      "enabled": false,
-      "blocked_by": "图形桌面",
-      "blocked_note": "Inkscape/矢量设计类，同上",
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "SaaS One-Pager Brand Refresh",
@@ -936,6 +974,7 @@
       "enabled": false,
       "blocked_by": "ALE未公开",
       "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
       "ale_examples": []
     },
     "8.4": {
@@ -944,8 +983,9 @@
       "name": "Audio, Music & Post-Production Media",
       "ale_n": 3,
       "enabled": false,
-      "blocked_by": "图形桌面",
-      "blocked_note": "音视频后期类，需桌面工具链",
+      "blocked_by": "授权软件",
+      "blocked_note": "ALE 原题用 Cubase/Dorico（需授权）；音频文件可自造，待评估后再开",
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Music Transcription",
@@ -969,6 +1009,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Competitive Programming Test Generator — Binary String Copying",
@@ -988,6 +1029,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Retail ETL Warehouse Cleanup",
@@ -1015,6 +1057,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Repair Standalone DiT Pipeline CFG Alignment",
@@ -1038,6 +1081,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Branch-and-Bound ATSP Solver",
@@ -1069,6 +1113,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Ghidra Malware Config Extraction",
@@ -1096,6 +1141,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": "Docker/k8s/Terraform 均开源，但嵌套 Docker 需本地 Docker 环境",
       "ale_examples": [
         {
           "title": "AWS Cost Optimization Analysis",
@@ -1116,9 +1162,10 @@
       "code": "quantum",
       "name": "Quantum Computing",
       "ale_n": 3,
-      "enabled": false,
-      "blocked_by": "专用SDK",
-      "blocked_note": "需 Qiskit 等量子计算栈，host 上可行性待评估",
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Clustered-Cyclic Code Circuit Simulation",
@@ -1142,6 +1189,7 @@
       "enabled": false,
       "blocked_by": "ALE未公开",
       "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
       "ale_examples": []
     },
     "10.2": {
@@ -1152,6 +1200,7 @@
       "enabled": false,
       "blocked_by": "ALE未公开",
       "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
       "ale_examples": []
     },
     "10.3": {
@@ -1162,6 +1211,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "FDS Single-Compartment Detector Reconstruction",
@@ -1177,6 +1227,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Homework Grading Numerical PDEs 02",
@@ -1196,6 +1247,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "MARC Remediation FOLIO Overlay",
@@ -1211,6 +1263,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Yi Manuscript Translation 1",
@@ -1226,6 +1279,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "GLM Lake Calibration",
@@ -1241,6 +1295,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Crop Rotation Audit for Stable Parcels",
@@ -1260,6 +1315,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "IHDP ITE Estimation",
@@ -1287,6 +1343,7 @@
       "enabled": true,
       "blocked_by": null,
       "blocked_note": null,
+      "source_note": null,
       "ale_examples": [
         {
           "title": "Go Game Reconstruction 1",
