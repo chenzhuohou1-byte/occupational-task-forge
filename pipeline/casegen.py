@@ -272,11 +272,11 @@ def _selftest():
         t = tasks.load_task(r["dir"])
         n6_ok, n6 = qc.n6_verify(t)
         n8_ok, n8 = qc.n8_floor_audit(t)
-        diff_ok, _ = qc.difficulty_gate(t)
+        diff_ok, _ = qc.difficulty_tier(t)
         print(("✓" if n6_ok else "✗") + " N6 全过" +
               ("" if n6_ok else "：%s" % [c["检查"] for c in n6["checks"] if not c["通过"]]))
         print(("✓" if n8_ok else "✗") + " N8 地板=0（%s）" % n8.get("各档地板"))
-        print(("✓" if not diff_ok else "✗") + " 难度未测→不进库（%s）" %
+        print(("✓" if not diff_ok else "✗") + " 难度未测→定不出级→不进库（%s）" %
               (not diff_ok))
         ok = n6_ok and n8_ok and not diff_ok
         print("\n%s" % ("casegen 物化半段自测通过" if ok else "casegen 物化半段自测失败"))

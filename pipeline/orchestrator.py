@@ -49,20 +49,27 @@ def _dump(cfg, run_id, name, payload):
 
 
 def qc_batch(tasks, cfg, run_id=None):
-    """批量 QC。**「进库」= N6 ∧ N8 ∧ §6.3 难度门槛**。
+    """批量 QC。**「进库」= N6 ∧ N8 ∧ 难度可判定（tier 算得出来）**。
 
-    难度那一项原来不在程序里、靠人看着 measuredDifficulty 手动确认——4 条数据时
-    还行，几个人同时铺量就一定会被当成「进库=True 即合格」，于是便宜模型能满分的
-    水题混进来。现在三项齐备才算进库。
+    2026-10-14 口径变更（契约 §6.3）：难度从**准入门槛**改成**标签**。原来第三项是
+    「难度门槛通过」（便宜档满分率必须 = 0 且前沿档 ≤ 1/3），那是一道硬过滤、会把所有
+    不难的题扔掉 —— 而新目标（ALE 高仿训练语料）正要 L1/L2。现在第三项只要求
+    **定得出级**：有一条当前判分器下的 agent 档便宜档测量。未测仍然不进库 ——
+    未测不是 L1，水题也得测出来才算水题。
+
+    **质量闸门一条没放松**：N6（夹具自证 / 判分可复现 / 判分器独立 / 依据可定位 /
+    题面不泄答案）与 N8（两档地板 ≤ 0）原地不动。放开的只有难度这一项。
     """
     run_id = run_id or _run_id()
 
     def _qc(task):
         n6_ok, n6 = qc.n6_verify(task, cfg.pass_threshold)
         n8_ok, n8 = qc.n8_floor_audit(task, cfg.floor)
-        d_ok, d = qc.difficulty_gate(task)
-        return {"task_id": task.task_id, "N6通过": n6_ok, "N8通过": n8_ok,
-                "难度门槛通过": d_ok, "进库": n6_ok and n8_ok and d_ok,
+        d_ok, d = qc.difficulty_tier(task)
+        return {"task_id": task.task_id, "用途": n6.get("用途"),
+                "tier": d.get("tier"), "级别来源": d.get("级别来源"),
+                "N6通过": n6_ok, "N8通过": n8_ok, "难度可判定": d_ok,
+                "进库": n6_ok and n8_ok and d_ok,
                 "N6": n6, "N8": n8, "难度": d}
 
     rows = _map(_qc, tasks, cfg.concurrency, cfg.max_retries)
@@ -75,7 +82,12 @@ def qc_batch(tasks, cfg, run_id=None):
                                                 "%s.json" % r["task_id"]), det)
             r["N6"]["逐字段明细"] = os.path.relpath(p, os.path.join(cfg.runs_dir, run_id))
     passed = sum(1 for r in rows if r.get("进库"))
-    summary = {"run_id": run_id, "任务数": len(tasks), "可进库": passed, "结果": rows}
+    tiers = {}
+    for r in rows:
+        if r.get("进库"):
+            tiers[r.get("tier") or "未定级"] = tiers.get(r.get("tier") or "未定级", 0) + 1
+    summary = {"run_id": run_id, "任务数": len(tasks), "可进库": passed,
+               "可进库分级": dict(sorted(tiers.items())), "结果": rows}
     _dump(cfg, run_id, "qc.json", summary)
     return summary
 
