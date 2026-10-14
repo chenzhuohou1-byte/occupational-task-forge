@@ -26,7 +26,7 @@ ALE任务/
 │   ├── qc.py                    # N6 三道校验 / N7 盲解 / N8 地板审计
 │   ├── scaffold.py              # 从草案生成可跑任务骨架
 │   ├── orchestrator.py          # 批量编排（并发/重试/落盘）
-│   ├── occupations.py           # 中国职业分类码表（选材用）
+│   ├── subdomains.py            # ALE 领域/子域码表（选题锚点 + taxonomy 自动写卡）
 │   ├── cli.py                   # 命令行入口
 │   ├── server.py + web/         # 本地 Web 控制台
 │   └── 八节点IO契约.md          # 节点 I/O 与判分契约详解
@@ -91,9 +91,9 @@ N1 选材 → N2a 事实核查(证据链) / N2b 口径裁定 → N3~5 起草 →
 | `run <任务> --solver golden\|neg\|empty` | 跑单任务并打印判分 |
 | `qc [<任务>\|--all]` | N6 三道校验 + N8 地板审计 |
 | `blind [<任务>\|--all]` | N7 盲解（用 LLM 当考生，估基线通过率） |
-| `build --occupation "<职业>" [--faces N]` | N1 选材 → N3~5 起草 → 落成骨架 |
+| `build --subdomain "<ALE 子域 id>" [--faces N]` | N1 选材 → N3~5 起草 → 落成骨架 |
 | `scaffold --spec <spec.json>` | 从 spec 生成任务骨架 |
-| `occupations [--domain <领域>]` | 中国职业分类码表（选材用） |
+| `subdomains [--domain <领域>] [--enabled-only]` | ALE 领域/子域码表（57 槽位，46 可派活） |
 
 ## Web 控制台（`python -m pipeline.server`）
 
@@ -172,7 +172,7 @@ python3 -m pipeline.attachments_selftest                     # 自测：六格�
 ```
                     ┌──────────────── 造数据流水线（generate + scaffold）─────────────┐
   职业码表           │  N1 选材 ──▶ N3~5 起草 ──▶ scaffold 落成骨架 ──▶ 人/agent 填    │
- occupations.py ───▶│    ▲                                              assets/       │
+ subdomains.py ────▶│    ▲                                              assets/       │
                     │  N2a 证据链 / N2b 口径（正解只许用表里的数字）        │            │
                     └───────────────────────────────────────────────────┼───────────┘
                                                                          ▼

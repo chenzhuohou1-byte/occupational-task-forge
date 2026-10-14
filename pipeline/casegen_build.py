@@ -21,7 +21,7 @@ import sys
 import time
 import traceback
 
-from . import casegen, crosscheck, qc, scaffold, tasks
+from . import casegen, crosscheck, qc, scaffold, subdomains, tasks
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 EXAMPLE_CASE = os.path.join(_HERE, "crosscheck_cases", "good")
@@ -244,7 +244,7 @@ def hardness_check(case_dir, spec=DEFAULT_HARDNESS, seed=0, world=None):
 
 
 # ---------------- 一轮校验 + 编排 ----------------
-def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, occupation=None):
+def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, subdomain=None):
     """返回 (stage, problem, info)；problem 为 None 表示本轮全过。"""
     err = smoke(case_dir)
     if err:
@@ -269,7 +269,7 @@ def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, occ
             ensure_ascii=False, indent=1, default=str)[:4000], None
     try:
         mat = casegen.materialize(case_dir, os.path.join(out_dir, "tasks_r%d" % rnd),
-                                  occupation=occupation, instance=world)
+                                  subdomain=subdomain, instance=world)
     except casegen.FixtureMismatch as e:
         # 负例/地板不符 → 判分器或地板合成器的锅（框架侧），返修案例没用；正例/部分分不符 → 案例侧
         return ("framework" if e.framework_side else "materialize"), "%s\n逐字段线索：\n%s" % (
@@ -319,12 +319,12 @@ def n7_commands(task_dir):
                   "=0 再跑前沿档，要 ≤1/3；0<fpr≤1/3 补到 6 跑。"}
 
 
-def build_case(occupation, out_dir, producer, max_rounds=3, n=200, seed=0, resume=False, log=None,
+def build_case(subdomain, out_dir, producer, max_rounds=3, n=200, seed=0, resume=False, log=None,
                hardness=DEFAULT_HARDNESS):
     log = log or (lambda m: None)
     case_dir = os.path.join(out_dir, "case")
     os.makedirs(case_dir, exist_ok=True)
-    report = {"occupation": occupation, "out": out_dir, "case_dir": case_dir,
+    report = {"subdomain": subdomain, "out": out_dir, "case_dir": case_dir,
               "resumed": bool(resume), "难度门": dataclasses.asdict(hardness), "rounds": []}
 
     def have(*names):
@@ -336,7 +336,7 @@ def build_case(occupation, out_dir, producer, max_rounds=3, n=200, seed=0, resum
             log("复用已有 规则.md（不调模型）")
         else:
             log("① 写规则（solve 侧模型）…")
-            producer.draft_rules(case_dir, occupation)
+            producer.draft_rules(case_dir, subdomain)
         rules = _read(os.path.join(case_dir, "规则.md"))
         if have(*CODE_FILES):
             log("复用已有 参数生成器/solve/断言/物化")
@@ -350,7 +350,7 @@ def build_case(occupation, out_dir, producer, max_rounds=3, n=200, seed=0, resum
             producer.write_solve2(case_dir, rules)          # 只交规则原文——独立性的编排层保证
         for rnd in range(1, max_rounds + 1):
             log("第 %d/%d 轮校验：冒烟 → 难度门 → crosscheck(%d 世界) → 物化 → qc …" % (rnd, max_rounds, n))
-            stage, problem, info = _check_round(case_dir, out_dir, rnd, n, seed, hardness, occupation)
+            stage, problem, info = _check_round(case_dir, out_dir, rnd, n, seed, hardness, subdomain)
             report["rounds"].append({"round": rnd, "stage": stage,
                                      "problem": problem[:1500] if problem else None})
             if problem is None:
@@ -394,7 +394,7 @@ class StaticProducer:
             if os.path.isfile(p):
                 shutil.copy(p, os.path.join(case_dir, nm))
 
-    def draft_rules(self, case_dir, occupation):
+    def draft_rules(self, case_dir, subdomain):
         self._copy(case_dir, ["规则.md"])
 
     def write_code(self, case_dir, rules_text, only_missing=False):
@@ -416,10 +416,11 @@ def _ex(name):
     return _read(os.path.join(EXAMPLE_CASE, name))
 
 
-def rules_messages(occupation):
+def rules_messages(subdomain):
     h = DEFAULT_HARDNESS
     return [{"role": "system", "content": SOLVE_SYSTEM}, {"role": "user", "content": (
-        "【步骤:规则】为职业「%s」设计一个 numeric_tabular 范式的闭世界核算任务，写出 规则.md。硬要求：\n"
+        "【步骤:规则】为下面这个 ALE 子域设计一个 numeric_tabular 范式的闭世界核算任务，写出 规则.md。\n\n"
+        "%s\n\n硬要求：\n"
         "1. 至少 %d 份**独立材料**（如 标准/限值表 + 业务明细 + 登记/委托/台账），每份材料将来单独成一个附件文件，"
         "不得合并成一个文件；计算必须跨材料按关联键 join；\n"
         "2. 规模：业务明细不少于 %d 行、标准/参照表不少于 %d 条（数据由参数生成器产出，规则里只写结构）；\n"
@@ -435,11 +436,11 @@ def rules_messages(occupation):
         "{\"样品编号\": \"S-007\", \"原因\": \"…\"}）；\n"
         "7. 「## 输出」一节明确返回 JSON 的结构与字段名；对象数组第一个字段是行键；"
         "集合语义的数组注明「顺序不计分」；金额保留 2 位小数；\n"
-        "8. 纯虚构、可公开。\n\n下面是另一个职业的范例，只示结构、不要照抄内容；"
+        "8. 纯虚构、可公开。\n\n下面是另一个子域的范例，只示结构、不要照抄内容；"
         "**范例规模很小、只有两份材料，你的案例必须满足上面的规模与特殊情形要求**：\n%s\n"
         "只输出：\n<<<FILE 规则.md>>>\n（规则原文）\n<<<END>>>") % (
-            occupation, h.min_files, h.min_main_rows, h.min_ref_rows, h.min_traps,
-            _fblock("规则.md", _ex("规则.md")))}]
+            subdomains.anchor(subdomain), h.min_files, h.min_main_rows, h.min_ref_rows,
+            h.min_traps, _fblock("规则.md", _ex("规则.md")))}]
 
 
 def code_messages(rules_text):
@@ -565,38 +566,61 @@ class LLMProducer:
                            "completion_tokens": res.completion_tokens}, f, ensure_ascii=False)
         return res.text or ""
 
-    def draft_rules(self, case_dir, occupation):
-        files = parse_files(self._call(self.solve_llm, "rules", rules_messages(occupation)))
-        if "规则.md" not in files:
-            raise RuntimeError("模型没按格式产出 规则.md（见 trace）")
+    _NUDGE = ("上一次回复里没有解析到任何文件块。请**只**输出文件内容，严格用下面的格式，"
+              "不要加解释文字、不要套 ``` 围栏：\n<<<FILE 文件名>>>\n文件内容\n<<<END>>>\n"
+              "本步需要的文件：%s")
+
+    def _call_files(self, llm, step, messages, want, retries=1):
+        """调模型 + 解析文件块；一个目标文件都没解析到就带纠正提示重试。
+
+        模型偶发整段不吐 <<<FILE>>> 标记（实测 glm-5.3 有过）。旧代码会静默写入 0 个文件，
+        这一轮白跑，而且要等到后面冒烟门报「缺少案例文件」才暴露。协议没守住不是案例的错，
+        所以重试用尽后抛 InfraError —— 不记作废、不消耗返修预算。
+        """
+        for attempt in range(retries + 1):
+            msgs = messages if attempt == 0 else (
+                messages + [{"role": "user", "content": self._NUDGE % "、".join(sorted(want))}])
+            files = parse_files(self._call(llm, step if attempt == 0 else step + "_retry", msgs))
+            if set(files) & set(want):
+                return files
+            self.log("  ⚠ %s 第 %d 次没解析到文件块（期望 %s）"
+                     % (step, attempt + 1, "、".join(sorted(want))))
+        raise InfraError("%s 连续 %d 次没按 <<<FILE>>> 格式产出 %s（见 trace）"
+                         % (step, retries + 1, "、".join(sorted(want))))
+
+    def draft_rules(self, case_dir, subdomain):
+        files = self._call_files(self.solve_llm, "rules", rules_messages(subdomain), {"规则.md"})
         _write_files(case_dir, files, {"规则.md"})
 
     def write_code(self, case_dir, rules_text, only_missing=False):
         def have_all(group):
             return all(os.path.isfile(os.path.join(case_dir, f)) for f in group)
         if not (only_missing and have_all(LOGIC_FILES)):   # 第①步：逻辑三件
-            files = parse_files(self._call(self.solve_llm, "code", code_messages(rules_text)))
+            files = self._call_files(self.solve_llm, "code", code_messages(rules_text),
+                                     set(LOGIC_FILES))
             _write_files(case_dir, files, set(LOGIC_FILES))
         if not (only_missing and have_all(MAT_FILES)):      # 第②步：物化（单独一次，防截断）
             sp = os.path.join(case_dir, "solve.py")
             solve_text = _read(sp) if os.path.isfile(sp) else ""
-            files = parse_files(self._call(self.solve_llm, "materialize",
-                                           materialize_messages(rules_text, solve_text)))
+            files = self._call_files(self.solve_llm, "materialize",
+                                     materialize_messages(rules_text, solve_text), set(MAT_FILES))
             _write_files(case_dir, files, set(MAT_FILES))
 
     def write_solve2(self, case_dir, rules_text):
-        files = parse_files(self._call(self.solve2_llm, "solve2", solve2_messages(rules_text)))
+        files = self._call_files(self.solve2_llm, "solve2", solve2_messages(rules_text),
+                                 {"solve2.py"})
         _write_files(case_dir, files, {"solve2.py"})
 
     def repair(self, case_dir, problem):
         cur = {n: _read(os.path.join(case_dir, n)) for n in ("规则.md",) + CODE_FILES
                if os.path.isfile(os.path.join(case_dir, n))}      # 不给 solve2.py，免得锚定
-        files = parse_files(self._call(self.solve_llm, "repair", repair_messages(cur, problem)))
-        return set(_write_files(case_dir, files, {"规则.md"} | set(CODE_FILES)))
+        allow = {"规则.md"} | set(CODE_FILES)
+        files = self._call_files(self.solve_llm, "repair", repair_messages(cur, problem), allow)
+        return set(_write_files(case_dir, files, allow))
 
 
 # ---------------- CLI ----------------
-def run_build(occupation=None, out=None, solve_model="gpt-5.5", solve2_model="glm-5.3-flash",
+def run_build(subdomain=None, out=None, solve_model="gpt-5.5", solve2_model="glm-5.3-flash",
               rounds=3, n=200, seed=0, resume=None, call_gap=30.0):
     """退出码：0 接收 / 1 作废（案例质量） / 2 配置问题 / 3 不是案例的错（网关故障或框架侧问题）。"""
     from .config import PipelineConfig
@@ -613,17 +637,27 @@ def run_build(occupation=None, out=None, solve_model="gpt-5.5", solve2_model="gl
             return 2
         old = os.path.join(out, "report.json")
         if os.path.isfile(old):          # 旧报告留档，不覆盖
-            if not occupation:
-                occupation = json.load(open(old, encoding="utf-8")).get("occupation")
+            if not subdomain:
+                subdomain = json.load(open(old, encoding="utf-8")).get("subdomain")
             os.rename(old, os.path.join(out, "report.%s.json" % time.strftime(
                 "%Y%m%d-%H%M%S", time.localtime(os.path.getmtime(old)))))
-    if not occupation:
-        print("✗ 需要 --occupation（或 --resume 一个带 report.json 的目录）", file=sys.stderr)
+    if not subdomain:
+        print("✗ 需要 --subdomain（ALE 子域 id，如 6.1；或 --resume 一个带 report.json 的目录）", file=sys.stderr)
+        return 2
+    try:      # 选题合法性前置：子域写错或暂时做不了，别先造完一条再发现没法归类
+        sd = subdomains.get(subdomain)
+    except KeyError as e:
+        print("✗ %s" % e, file=sys.stderr)
+        return 2
+    if not sd["enabled"]:
+        print("✗ 子域 %s %s 暂时做不了（%s：%s）" % (
+            sd["id"], sd["name"] or "", sd["blocked_by"], sd["blocked_note"]), file=sys.stderr)
         return 2
     os.environ.setdefault("ALE_LLM_RETRIES", "6")   # 429 退避 8/16/32/60/60s，扛约 3 分钟限流
     os.environ.setdefault("ALE_LLM_MAX_TOKENS", "32000")   # 代码/物化步输出长，默认 16000 会截断（finish=length）
-    out = out or os.path.join(cfg.runs_dir, "casegen", "%s-%s" % (
-        scaffold._safe_seg(occupation, 24), time.strftime("%Y%m%d-%H%M%S")))
+    out = out or os.path.join(cfg.runs_dir, "casegen", "%s-%s-%s" % (
+        sd["id"], scaffold._safe_seg(sd["code"] or "unknown", 20),
+        time.strftime("%Y%m%d-%H%M%S")))
     os.makedirs(out, exist_ok=True)
     _stderr_log("产出目录：%s%s" % (out, "（续跑）" if resume else ""))
     cost = CostTracker()
@@ -631,21 +665,122 @@ def run_build(occupation=None, out=None, solve_model="gpt-5.5", solve2_model="gl
                        get_client(dataclasses.replace(cfg.llm, model=solve2_model)),
                        trace_dir=os.path.join(out, "trace"), cost=cost,
                        min_gap=call_gap, log=_stderr_log)
-    try:
-        rep, code = build_case(occupation, out, prod, max_rounds=rounds, n=n, seed=seed,
-                               resume=bool(resume), log=_stderr_log), 0
-    except CaseRejected as e:
-        rep, code = e.args[0], 1
-    except (InfraError, FrameworkError) as e:
-        rep, code = e.args[0], 3
-    except RuntimeError as e:
-        rep, code = {"status": "rejected", "错误": str(e)}, 1
+    # 网关故障（503/504/429 耗尽、协议没守住）是瞬时的，不是案例的错：原地带退避自动续跑，
+    # 复用已产出的 规则/代码/solve2，不重复花钱。10-13 三次尝试死两次在网关、白耗 59 分钟，
+    # 全是因为要人工再敲一次 --resume。
+    infra_retry = int(os.environ.get("ALE_CASEGEN_INFRA_RETRY", "2"))
+    attempt, rep, code = 0, None, 0
+    while True:
+        try:
+            rep, code = build_case(subdomain, out, prod, max_rounds=rounds, n=n, seed=seed,
+                                   resume=bool(resume) or attempt > 0, log=_stderr_log), 0
+            break
+        except CaseRejected as e:
+            rep, code = e.args[0], 1
+            break
+        except InfraError as e:
+            rep = e.args[0] if isinstance(e.args[0], dict) else {"status": "infra_error",
+                                                                 "错误": str(e)}
+            if attempt >= infra_retry:
+                code = 3
+                break
+            attempt += 1
+            back = 30 * attempt
+            _stderr_log("网关故障，%ds 后自动续跑（第 %d/%d 次）：%s"
+                        % (back, attempt, infra_retry, rep.get("错误")))
+            time.sleep(back)
+        except FrameworkError as e:
+            rep, code = e.args[0], 3
+            break
+        except RuntimeError as e:
+            rep, code = {"status": "rejected", "错误": str(e)}, 1
+            break
     rep.update({"模型": {"solve": solve_model, "solve2": solve2_model}, "退出码": code,
+                "网关重试次数": attempt,
                 "成本RMB": cost.total(), "未计价模型": cost.unpriced_models()})
     with open(os.path.join(out, "report.json"), "w", encoding="utf-8") as f:
         json.dump(rep, f, ensure_ascii=False, indent=2, default=str)
     print(json.dumps(rep, ensure_ascii=False, indent=2, default=str))
     return code
+
+
+def _batch_report(root, rows, t0):
+    acc = [r for r in rows if r["status"] == "accepted"]
+    # 网关故障不算案例质量问题，所以产出率给两个：含网关（交付排期用）与不含（案例质量用）
+    non_infra = [r for r in rows if r["status"] != "infra_error"]
+    dist = {}
+    for r in rows:
+        k = r["status"] or "无报告"
+        dist[k] = dist.get(k, 0) + 1
+    secs = sorted(r["耗时秒"] for r in acc if isinstance(r["耗时秒"], (int, float)))
+    costs = [r["成本RMB"] for r in rows if isinstance(r["成本RMB"], (int, float))]
+    # 返修预算花在哪：按 stage 统计所有非 pass 轮次。只看「停在哪」答不了这个问题。
+    stage = {}
+    for r in rows:
+        for s in (r.get("各轮stage") or []):
+            if s and s != "pass":
+                stage[s] = stage.get(s, 0) + 1
+    n_rep = sum(stage.values()) or 1
+    rep = {
+        "尝试数": len(rows), "接收数": len(acc),
+        "产出率": round(len(acc) / len(rows), 4) if rows else None,
+        "产出率_排除网关故障": round(len(acc) / len(non_infra), 4) if non_infra else None,
+        "状态分布": dist,
+        "返修轮次总数": sum(stage.values()),
+        "返修stage分布": dict(sorted(stage.items(), key=lambda kv: -kv[1])),
+        "返修stage占比": {k: round(v / n_rep, 4)
+                       for k, v in sorted(stage.items(), key=lambda kv: -kv[1])},
+        "网关重试总次数": sum(r.get("网关重试次数") or 0 for r in rows),
+        "接收耗时秒_中位": secs[len(secs) // 2] if secs else None,
+        "接收耗时秒_最长": secs[-1] if secs else None,
+        "总耗时秒": round(time.time() - t0),
+        "总成本RMB": round(sum(costs), 4) if costs else None,
+        "单条可用成本RMB": round(sum(costs) / len(acc), 4) if costs and acc else None,
+        "明细": rows,
+    }
+    with open(os.path.join(root, "batch_report.json"), "w", encoding="utf-8") as f:
+        json.dump(rep, f, ensure_ascii=False, indent=2, default=str)
+    return rep
+
+
+def run_batch(sids, repeat=1, out_root=None, **kw):
+    """连跑 N 次 build-case，实测「每次尝试产出一条可用数据」的比率。
+
+    500 条的交付排期全靠这个比率推，必须实测、不能估（分工文档雅婷第 1 项，带★）。
+    每次尝试一个独立产出目录；每跑完一次就重写 batch_report.json，中途挂掉也有数。
+    """
+    from .config import PipelineConfig
+    cfg = PipelineConfig()
+    root = out_root or os.path.join(cfg.runs_dir, "casegen",
+                                    "batch-%s" % time.strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(root, exist_ok=True)
+    plan = [sids[i % len(sids)] for i in range(len(sids) * repeat)]
+    rows, t0 = [], time.time()
+    _stderr_log("跑批：%d 次尝试，产出根目录 %s" % (len(plan), root))
+    for i, sid in enumerate(plan, 1):
+        code_seg = scaffold._safe_seg((subdomains.get(sid)["code"] or "unknown"), 20) \
+            if sid in subdomains.load()["subdomains"] else scaffold._safe_seg(str(sid), 20)
+        out = os.path.join(root, "%02d-%s-%s" % (i, sid, code_seg))
+        _stderr_log("═══ 尝试 %d/%d：子域 %s ═══" % (i, len(plan), sid))
+        code = run_build(sid, out, **kw)
+        rep = {}
+        rp = os.path.join(out, "report.json")
+        if os.path.isfile(rp):
+            with open(rp, encoding="utf-8") as f:
+                rep = json.load(f)
+        rounds = rep.get("rounds") or []
+        rows.append({"序号": i, "子域": sid, "退出码": code, "status": rep.get("status"),
+                     "耗时秒": rep.get("耗时秒"), "轮数": len(rounds),
+                     "停在": (rounds or [{}])[-1].get("stage"),
+                     "各轮stage": [r.get("stage") for r in rounds],
+                     "网关重试次数": rep.get("网关重试次数"), "成本RMB": rep.get("成本RMB"),
+                     "task_dir": rep.get("task_dir"), "out": out})
+        _batch_report(root, rows, t0)
+    rep = _batch_report(root, rows, t0)
+    print(json.dumps({k: v for k, v in rep.items() if k != "明细"},
+                     ensure_ascii=False, indent=2, default=str))
+    _stderr_log("跑批报告：%s" % os.path.join(root, "batch_report.json"))
+    return 0 if rep["接收数"] else 1
 
 
 def _selftest():
@@ -662,7 +797,7 @@ def _selftest():
     tmp = tempfile.mkdtemp(prefix="casegen_build_selftest_")
     try:
         sp = StaticProducer(good)
-        rep = build_case("（自测）", os.path.join(tmp, "static"), sp, n=60, hardness=RELAXED)
+        rep = build_case("6.1", os.path.join(tmp, "static"), sp, n=60, hardness=RELAXED)
         check(rep["status"] == "accepted" and len(rep["rounds"]) == 1,
               "静态 producer：好案例 1 轮接收，物化 + qc(N6/N8) 全过")
         check(sp.solve2_inputs == [_read(os.path.join(good, "规则.md"))],
@@ -673,7 +808,7 @@ def _selftest():
             bugfull = os.path.join(tmp, "bugfull")
             shutil.copytree(bug, bugfull, ignore=shutil.ignore_patterns("__pycache__"))
             shutil.copy(os.path.join(good, "物化.py"), os.path.join(bugfull, "物化.py"))
-            build_case("（自测）", os.path.join(tmp, "bug"), StaticProducer(bugfull), n=60, hardness=RELAXED)
+            build_case("6.1", os.path.join(tmp, "bug"), StaticProducer(bugfull), n=60, hardness=RELAXED)
             check(False, "注错案例应被作废")
         except CaseRejected as e:
             check(e.args[0]["rounds"][-1]["stage"] == "crosscheck",
@@ -689,7 +824,7 @@ def _selftest():
         solve2_mock = MockLLMClient("mock-solve2", scripted={   # 只有这个 client 认识独立实现步骤
             "【步骤:独立实现】": "```\n" + blk(["solve2.py"]) + "```"})
         trace = os.path.join(tmp, "llm", "trace")
-        rep = build_case("（自测）", os.path.join(tmp, "llm"),
+        rep = build_case("6.1", os.path.join(tmp, "llm"),
                          LLMProducer(solve_mock, solve2_mock, trace_dir=trace), n=60, hardness=RELAXED)
         check(rep["status"] == "accepted", "LLM producer（mock 网关）：多文件响应解析 + 换 client → 接收")
         p2 = [f for f in sorted(os.listdir(trace)) if f.endswith("_solve2_prompt.json")]
@@ -717,7 +852,7 @@ def _selftest():
                                         "【步骤:返修】": [blk(["规则.md"])]})
         s2_llm = SeqClient("seq-solve2", {"【步骤:独立实现】": [bad2, blk(["solve2.py"])]})
         trace = os.path.join(tmp, "repair", "trace")
-        rep = build_case("（自测）", os.path.join(tmp, "repair"),
+        rep = build_case("6.1", os.path.join(tmp, "repair"),
                          LLMProducer(s_llm, s2_llm, trace_dir=trace), n=60, hardness=RELAXED)
         r0 = rep["rounds"][0]
         check(rep["status"] == "accepted" and len(rep["rounds"]) == 2 and r0["stage"] == "crosscheck"
@@ -734,18 +869,61 @@ def _selftest():
             def chat(self, messages, **kw):
                 raise RuntimeError("网关请求失败（重试 6 次仍失败）：HTTP Error 429: Too Many Requests")
         try:
-            build_case("（自测）", os.path.join(tmp, "infra"), LLMProducer(FailClient(), FailClient()))
+            build_case("6.1", os.path.join(tmp, "infra"), LLMProducer(FailClient(), FailClient()))
             check(False, "网关故障应抛 InfraError")
         except InfraError as e:
             r = e.args[0]
             check(r["status"] == "infra_error" and r["rounds"] == [] and "429" in r["错误"],
                   "网关故障（429）→ infra_error、不算作废、不消耗返修")
 
+        # 协议守卫：模型整段不吐 <<<FILE>>> 标记（实测 glm-5.3 有过）→ 带纠正提示重试
+        class ProtoClient:
+            model = "proto"
+
+            def __init__(self, texts):
+                self.texts, self.seen = list(texts), []
+
+            def chat(self, messages, **kw):
+                from .llm import LLMResult
+                self.seen.append(messages[-1]["content"])
+                t = self.texts.pop(0) if len(self.texts) > 1 else self.texts[0]
+                return LLMResult(text=t, model=self.model)
+
+        def _draft(texts, tag):
+            cd = os.path.join(tmp, tag, "case")
+            os.makedirs(cd)
+            pc = ProtoClient(texts)
+            LLMProducer(pc, MockLLMClient("s2"),
+                        trace_dir=os.path.join(tmp, tag, "trace")).draft_rules(cd, "6.1")
+            return pc, cd
+
+        pc, cd = _draft(["我先说一下思路……（没有文件块）", blk(["规则.md"])], "proto_ok")
+        check(os.path.isfile(os.path.join(cd, "规则.md")) and len(pc.seen) == 2
+              and "<<<FILE 文件名>>>" in pc.seen[1],
+              "协议守卫：没解析到文件块 → 带纠正提示重试一次 → 规则.md 落盘")
+        try:
+            pc, _ = _draft(["两次都没有文件块"], "proto_bad")
+            check(False, "连续不守协议应抛 InfraError")
+        except InfraError as e:
+            check("规则.md" in str(e) and len(pc.seen) == 2,
+                  "协议守卫：重试用尽 → InfraError（不记作废、不消耗返修）")
+
+        # 跑批统计：产出率两种口径（含/不含网关故障）
+        rows = [{"status": "accepted", "耗时秒": 300, "成本RMB": 1.0, "网关重试次数": 0},
+                {"status": "rejected", "耗时秒": 900, "成本RMB": 2.0, "网关重试次数": 0},
+                {"status": "infra_error", "耗时秒": 60, "成本RMB": 0.5, "网关重试次数": 2},
+                {"status": "accepted", "耗时秒": 600, "成本RMB": 1.5, "网关重试次数": 1}]
+        br = _batch_report(tmp, rows, time.time())
+        check(br["尝试数"] == 4 and br["接收数"] == 2 and br["产出率"] == 0.5
+              and br["产出率_排除网关故障"] == round(2 / 3, 4) and br["网关重试总次数"] == 3
+              and br["单条可用成本RMB"] == 2.5 and br["接收耗时秒_中位"] == 600,
+              "跑批统计：产出率 0.5 / 排除网关 0.6667 / 单条可用成本 2.5 元")
+
         # 地板白拿分 → framework_error，不返修（临时把地板合成器换成空操作来模拟）
         orig = casegen.floor.synthesize
         casegen.floor.synthesize = lambda d, seed=0: []
         try:
-            build_case("（自测）", os.path.join(tmp, "fw"), StaticProducer(good), n=60, hardness=RELAXED)
+            build_case("6.1", os.path.join(tmp, "fw"), StaticProducer(good), n=60, hardness=RELAXED)
             check(False, "地板白拿分应抛 FrameworkError")
         except FrameworkError as e:
             r = e.args[0]
@@ -759,7 +937,7 @@ def _selftest():
         class Boom:
             def __getattr__(self, name):
                 raise AssertionError("续跑不该调用 producer.%s" % name)
-        rep = build_case("（自测）", os.path.join(tmp, "static"), Boom(), n=60, resume=True,
+        rep = build_case("6.1", os.path.join(tmp, "static"), Boom(), n=60, resume=True,
                          hardness=RELAXED)
         check(rep["status"] == "accepted" and rep["resumed"], "--resume：已有文件全复用，零次模型调用即接收")
 
@@ -783,7 +961,7 @@ def _selftest():
             shutil.copy(os.path.join(good, nm), os.path.join(split, "case", nm))
         mat_only = SeqClient("seq-mat", {"【步骤:物化】": [blk(["物化.py"])],
                                          "【步骤:代码】": ["不该被调用"]})
-        rep = build_case("（自测）", split, LLMProducer(mat_only, MockLLMClient("s2")),
+        rep = build_case("6.1", split, LLMProducer(mat_only, MockLLMClient("s2")),
                          n=60, resume=True, hardness=RELAXED)
         check(rep["status"] == "accepted"
               and os.path.isfile(os.path.join(split, "case", "物化.py")),
@@ -799,7 +977,7 @@ def _selftest():
 
         # 难度门：默认门拒收小范例（2 份材料 / 4 行 / 「单价等于封顶」随机世界里从不出现），停在 hardness
         try:
-            build_case("（自测）", os.path.join(tmp, "soft"), StaticProducer(good), n=60)
+            build_case("6.1", os.path.join(tmp, "soft"), StaticProducer(good), n=60)
             check(False, "默认难度门应拒收小范例")
         except CaseRejected as e:
             r0 = e.args[0]["rounds"][0]
@@ -849,7 +1027,7 @@ def _selftest():
               "框架挑 INSTANCE：物化无 INSTANCE 时从生成器扫出一个覆盖所有 TRAP 的世界")
 
         # 接收报告带后续测题计划（当前生题不执行 N7；maxSteps 按公式、路径绝对且已引号）+ 数据集 sidecar 草稿
-        rep = build_case("（自测）", os.path.join(tmp, "n7"), StaticProducer(good), n=60, hardness=RELAXED)
+        rep = build_case("6.1", os.path.join(tmp, "n7"), StaticProducer(good), n=60, hardness=RELAXED)
         n7 = rep.get("后续测题计划") or {}
         want = max(20, -(-(n7.get("附件数", 0) + n7.get("交付数", 0)) * 3 // 2))
         check(n7.get("maxSteps") == want == 20 and "N7_MODE=agent" in n7.get("便宜档", "")
@@ -857,9 +1035,16 @@ def _selftest():
               and ("N7_TASK='%s'" % os.path.abspath(rep["task_dir"])) in n7["便宜档"],
               "接收报告带 N7 agent 档命令：maxSteps=附件+交付+50%(最低20)、任务路径绝对且加引号")
         side = json.load(open(os.path.join(rep["task_dir"], "dataset.json"), encoding="utf-8"))
-        check(side.get("职位") == "（自测）" and side.get("自动化类型") == "闭世界" and side.get("提交人") == ""
+        check(side.get("ALE子域") == "6.1 Accounting & Finance" and side.get("职位") == ""
+              and side.get("自动化类型") == "闭世界" and side.get("提交人") == ""
               and set(side.get("_draft", {})) == set(casegen.DRAFT_FIELDS),
-              "物化产数据集 sidecar 草稿 dataset.json（职位/闭世界/构建日期，_draft 标待人核字段）")
+              "物化产数据集 sidecar 草稿 dataset.json（ALE子域/闭世界/构建日期，_draft 标待人核字段）")
+        card = json.load(open(os.path.join(rep["task_dir"], "task_card.json"), encoding="utf-8"))
+        check(card["taxonomy"] == {"domain_id": "6", "domain_code": "business_finance",
+                                   "subdomain_id": "6.1", "subdomain_code": "accounting",
+                                   "subdomain_name": "Accounting & Finance"}
+              and card["领域"] == "business_finance" and card["子域"].startswith("6.1 "),
+              "taxonomy 由框架按 ALE 码表自动写卡，不采信模型自己写的 TASK[领域]")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     ok = all(res)
@@ -870,14 +1055,14 @@ def _selftest():
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog="pipeline.casegen_build")
-    ap.add_argument("--occupation")
+    ap.add_argument("--subdomain", help="ALE 子域 id，如 6.1")
     ap.add_argument("--out")
     ap.add_argument("--resume", help="续跑某个产出目录（复用已有 规则/代码/solve2）")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
-    if a.selftest or not (a.occupation or a.resume):
+    if a.selftest or not (a.subdomain or a.resume):
         return 0 if _selftest() else 1
-    return run_build(a.occupation, a.out, resume=a.resume)
+    return run_build(a.subdomain, a.out, resume=a.resume)
 
 
 if __name__ == "__main__":

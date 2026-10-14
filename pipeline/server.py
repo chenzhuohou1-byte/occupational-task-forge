@@ -10,7 +10,7 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import generate, harness, scaffold, occupations as occ
+from . import generate, harness, scaffold, subdomains as occ
 from .config import PipelineConfig
 from .cost import CostTracker
 from .llm import get_client
@@ -185,7 +185,16 @@ class Handler(BaseHTTPRequestHandler):
         if p.path == "/api/config":
             return self._send(200, _config_payload())
         if p.path == "/api/occupations":
-            return self._send(200, occ.load()["positions_798"])
+            # 保持返回形状 {分组: [选项…]} 不变（前端下拉直接用），内容换成 ALE 子域码表
+            d = occ.load()
+            out = {}
+            for sid in occ.subdomains():
+                s = d["subdomains"][sid]
+                g = (d["domains"].get(s["domain_id"]) or {}).get("code") or s["domain_id"]
+                label = "%s %s" % (sid, s["name"] or "（ALE 未公开）")
+                out.setdefault(g, []).append(
+                    label if s["enabled"] else label + "（暂不可做：%s）" % s["blocked_by"])
+            return self._send(200, out)
         if p.path == "/api/task":
             t = _task_by_id(parse_qs(p.query).get("task_id", [""])[0])
             if not t:

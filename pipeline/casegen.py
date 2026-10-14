@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 
-from . import floor, harness, scaffold, tasks
+from . import floor, harness, scaffold, subdomains, tasks
 
 
 def _load(path, name):
@@ -170,14 +170,18 @@ class FixtureMismatch(RuntimeError):
 DRAFT_FIELDS = ("一句话概括", "操作路径", "答复要点梗概")
 
 
-def _sidecar(task, occupation):
+def _sidecar(task, subdomain_label):
     """数据集视图 sidecar（数据仓 _meta/dataset-schema.md v0.1）。pipeline 不读它；
-    模型写在 物化.TASK 里的三个草稿字段原样搬过来、标 _draft=true 待人核，提交人留空给人填。"""
+    模型写在 物化.TASK 里的三个草稿字段原样搬过来、标 _draft=true 待人核，提交人留空给人填。
+
+    「职位」留空给人填——职业码表已废弃，选题轴换成 ALE 子域，另记在 ALE子域 字段里。
+    """
     def txt(v):
         return "\n".join(map(str, v)) if isinstance(v, (list, tuple)) else str(v or "")
     side = {"_schema": "KA类数据集 sidecar v0.1",
             "_note": "本文件只服务数据集视图，pipeline 不读。模型草稿字段人核后把 _draft 删除或置 false。",
-            "提交人": "", "职位": occupation or "", "一句话概括": "", "自动化类型": "闭世界",
+            "提交人": "", "职位": "", "ALE子域": subdomain_label or "",
+            "一句话概括": "", "自动化类型": "闭世界",
             "构建日期": datetime.date.today().isoformat(), "操作路径": "", "答复要点梗概": ""}
     for k in DRAFT_FIELDS:
         side[k] = txt(task.get(k))
@@ -185,7 +189,7 @@ def _sidecar(task, occupation):
     return side
 
 
-def materialize(case_dir, out_root, seed=0, occupation=None, instance=None):
+def materialize(case_dir, out_root, seed=0, subdomain=None, instance=None):
     物化 = _load(os.path.join(case_dir, "物化.py"), "_cg_mat")
     solve_mod = _load(os.path.join(case_dir, "solve.py"), "_cg_solve")
     # 优先用调用方（难度门）挑好的世界；否则 物化.INSTANCE；再否则生成器第一个世界
@@ -195,8 +199,16 @@ def materialize(case_dir, out_root, seed=0, occupation=None, instance=None):
         world = gen.worlds(1, seed)[0]
     task = 物化.TASK
 
-    spec = {"领域": task["领域"], "任务名": task["任务名"], "task_id": task["task_id"],
-            "子域": task.get("子域", ""), "prompt": task["prompt"], "交付要求": task["交付要求"],
+    # 领域/子域/taxonomy 以 ALE 码表为准，不采信模型自己写的 TASK["领域"]
+    tx, domain, sub = {}, task["领域"], task.get("子域", "")
+    if subdomain:
+        s = subdomains.get(subdomain)
+        tx = subdomains.taxonomy(subdomain)
+        domain = s["domain_code"]
+        sub = "%s %s" % (s["id"], s["name"] or "")
+    spec = {"领域": domain, "任务名": task["任务名"], "task_id": task["task_id"],
+            "子域": sub, "taxonomy": tx, "prompt": task["prompt"],
+            "交付要求": task["交付要求"],
             "元数据": {"机器规格": "2C4G", "超时秒": 1800, "判分构成": "纯代码",
                      "schema": "判分契约 v1.0", "生成方式": "程序化生成"}}
     res = scaffold.scaffold_task(spec, out_root)
@@ -257,7 +269,7 @@ def materialize(case_dir, out_root, seed=0, occupation=None, instance=None):
     with open(card_path, "w", encoding="utf-8") as f:
         f.write(json.dumps(card, ensure_ascii=False, indent=2) + "\n")
     with open(os.path.join(task_dir, "dataset.json"), "w", encoding="utf-8") as f:
-        f.write(json.dumps(_sidecar(task, occupation), ensure_ascii=False, indent=2) + "\n")
+        f.write(json.dumps(_sidecar(task, sub), ensure_ascii=False, indent=2) + "\n")
     return {"dir": task_dir, "fixtureScores": obs}
 
 

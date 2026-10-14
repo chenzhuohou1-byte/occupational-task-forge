@@ -10,7 +10,7 @@
 
 ## 1. 起草（N1–N5）
 ```
-python -m pipeline.cli build --occupation "某职业" --faces 3
+python -m pipeline.cli build --subdomain "6.1" --faces 3
 ```
 得到 N1 工作面 + 草稿 + 可跑骨架（task_card 已是契约 v1 schema、含独立判分器）。也可手写 spec 调 `scaffold.scaffold_task`。骨架自带 TODO 清单。
 
