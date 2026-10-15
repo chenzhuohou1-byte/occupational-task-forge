@@ -10,7 +10,7 @@
 规格里不许出现表达式或代码字符串：谁都能审、能 diff、能被非编码的人改。
 
 三方库只经 kw_* 底座间接使用：kw_xlsx→openpyxl、kw_pdf→reportlab、
-kw_docx→macOS 自带 textutil。任一缺失只让那一份附件进 errors[]，不抛异常、不影响
+kw_docx 纯标准库（zipfile 手写 XML）。任一缺失只让那一份附件进 errors[]，不抛异常、不影响
 同批其余文件——产线对外声明「纯标准库」，这里必须真能降级，不能靠"反正机器上装了"。
 """
 import csv
@@ -19,14 +19,10 @@ import re
 import sys
 from xml.sax.saxutils import escape as _esc
 
-# kw_* 写文件底座。**仓内自带一份**（`pipeline/kwtools/`），这样 clone 下来就能造
-# xlsx/pdf/docx/csv —— 原来只在 `~/Desktop/KW数据产线/KW数据构造_通用工具` 这个仓外
-# 目录里找，协作者 clone 完造不出 xlsx/pdf/docx（CI 也当场报了这个错）。
-# 仍保留 KW_TOOLS_DIR 与兄弟目录两条外部路径，且**优先级高于仓内**，便于临时换版本。
+# kw_* 写文件底座：仓内自带（`pipeline/kwtools/`），clone 下来就能造 xlsx/pdf/docx/csv。
+# 仓外那份旧副本已于 2026-10-15 删除；临时换版本用 KW_TOOLS_DIR 覆盖。
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _VENDORED_TOOLS = os.path.join(_HERE, "kwtools")
-_DEFAULT_TOOLS = os.path.expanduser("~/Desktop/KW数据产线/KW数据构造_通用工具")
-_SIBLING_TOOLS = os.path.join(os.path.dirname(os.path.dirname(_HERE)), "KW数据构造_通用工具")
 
 SUPPORTED = ("xlsx", "pdf", "docx", "csv", "md", "txt")
 
@@ -39,10 +35,9 @@ def tools_dir():
     """返回第一个存在的 kw_* 工具目录；一个都没有返回空串。
 
     每次调用都重读环境变量，不在 import 期定死——跑测和换机器时要能临时改指向。
-    顺序：KW_TOOLS_DIR（显式覆盖）→ **仓内自带**（默认，各机器行为一致）→ 兄弟目录 → 旧默认路径。
+    顺序：KW_TOOLS_DIR（显式覆盖）→ 仓内自带。
     """
-    for p in (os.environ.get("KW_TOOLS_DIR", ""), _VENDORED_TOOLS,
-              _SIBLING_TOOLS, _DEFAULT_TOOLS):
+    for p in (os.environ.get("KW_TOOLS_DIR", ""), _VENDORED_TOOLS):
         if p and os.path.isdir(p):
             return p
     return ""
@@ -184,7 +179,7 @@ _DOCX_TAG = {"标题": "h1", "副标题": "h2", "小标题": "h3", "正文": "p"
 
 
 def _write_docx(path, item):
-    """docx：块列表 → HTML → textutil 转真 docx。也接受 html 字段直接透传。"""
+    """docx：块列表 → HTML → kw_docx 写真 docx。也接受 html 字段直接透传。"""
     kw_docx = _tool("kw_docx")
     html = item.get("html")
     if html is None:
@@ -214,7 +209,7 @@ def _write_docx(path, item):
     try:
         kw_docx.html_to_docx(html, path, item.get("标题") or "")
     except FileNotFoundError as e:
-        raise MissingDep("docx 依赖 macOS 自带 textutil（%s）" % e)
+        raise MissingDep("docx 写出失败（%s）" % e)
 
 
 def _write_csv(path, item):

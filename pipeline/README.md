@@ -1,12 +1,11 @@
 # ALE 式数据产线（pipeline）
 
-> ⚠️ **判分契约以 `../判分契约_v1.0.md` 为准**，本文件「判分契约」一节的 `pass_fail` 写法已废止
-> （新为 `passed` bool + `errors[]` 数组 + 四档夹具）。代码尚未改，清单见 `ALE调研/TODO3_数据产线Demo搭建.md` §八。
-> **`tasks/` 下现有四条数据已降级为产线自测夹具，不作交付数据**（`scoringBasis` 全空、便宜档模型盲解满分）。
+> **判分契约以 `../判分契约_v1.0.md` 为准**（`passed` bool + `errors[]` + 四档夹具），本文件只讲代码怎么用。
+> 新增一条数据的操作步骤见 `../docs/新增一条数据-playbook.md`。
 
 把「造一条可自动判分的职业任务数据」从手工作业变成一条能跑通的管线。参照 **ALE（Agents' Last Exam）**：
 每条数据 = 真实派活的题面 + 输入文件 + 藏起来的标准答案 + **一段能自动判分、输出 0~1 分的代码**。
-本产线是 TODO3「数据产线 Demo」的实现，纯 Python 标准库、无三方依赖、免构建。
+纯 Python 标准库、无三方依赖、免构建。
 
 ## 目录结构
 
@@ -25,6 +24,12 @@ ALE任务/
 │   ├── generate.py              # N1 选材 / N2a 事实核查+证据链 / N3~5 起草
 │   ├── qc.py                    # N6 三道校验 / N7 盲解 / N8 地板审计
 │   ├── scaffold.py              # 从草案生成可跑任务骨架
+│   ├── agentsolve.py            # N7 agent 档考法（list/read/write/run_python/finish，沙箱）
+│   ├── floor.py                 # N8 程序化地板（从 golden 合成同结构假答案）
+│   ├── crosscheck.py            # 双实现交叉复算
+│   ├── casegen.py / casegen_build.py  # 闭世界案例自动生成（build-case）
+│   ├── attachments.py           # N4 造附件（xlsx/pdf/docx/csv，kwtools/ 为底座）
+│   ├── server.py + web/         # Web 控制台与进度看板
 │   ├── orchestrator.py          # 批量编排（并发/重试/落盘）
 │   ├── occupations.py           # 中国职业分类码表（选材用）
 │   ├── cli.py                   # 命令行入口
