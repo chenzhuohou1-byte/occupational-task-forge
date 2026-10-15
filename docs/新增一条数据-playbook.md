@@ -53,8 +53,10 @@ ALE_LLM_MODEL="Claude Sonnet 5.5" ALE_LLM_REASONING_EFFORT=low N7_RUNS=3 N7_TIER
   两档立刻都能满分 → 退回加硬。**难度要来自题，不要来自判分器的噪声。**
 - 测完把结果填进 `task_card.measuredDifficulty`（绑 model/toolset/budget/scorerVersion/nRuns）。
   **改过判分器就要同步改 `evaluation.scorerVersion` 并重测**——qc 会拦住「新判分器配旧难度数字」。
-- 想顺便看看这条题在**多步 agent**（能列目录、按需读文件、分次写）手里有多难：给 `N7_MODE=agent`
-  （默认 `blind`＝单发盲解）。入库门槛目前以 **blind** 档为准，agent 档是对照用。
+- **定级测量用 agent 档**：`N7_MODE=agent`（默认工具集 `N7_TOOLS=python`＝能跑代码，对齐 ALE
+  沙箱；`N7_TOOLS=file` 是旧考法、只作对照）。`N7_MODE=blind` 单发盲解只作便宜预筛、不定级（契约 §6.3）。
+  **能跑代码之后，算术、费率、封顶、跳档这类「计算复杂度」基本不再是难度**（上面第 3 类杠杆），
+  难度只能来自「找得到、对得上、判得准」：海量材料里挖漏项、跨文档冲突取舍、需要判断的结论。
 - **每次测量都会留轨迹**（默认开，`N7_NO_TRACE=1` 关）：`<N7_OUT 同名>_trace/runN/` 下有
   `prompt.txt`（喂进去的完整题面+附件文本）、`response_raw.txt`（模型原始响应）、
   `output/`（它交的文件）、`score.json`（判分器完整输出，含逐字段 expected/observed）；

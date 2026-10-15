@@ -169,22 +169,28 @@ def n8_floor_audit(task, floor=0.0):
 
 
 _MD_REQUIRED = ("model", "toolset", "budget", "scorerVersion", "nRuns")
+# agent 档两种考法：能跑代码（现行，对齐 ALE 沙箱的 run_command）/ 只能读写文件（旧考法）。
+# 旧考法测量仍可定级但只给推定级 —— 它把「心算出错」也算成难度，偏硬。
+AGENT_TOOLSET = "agent-file-python"
+LEGACY_AGENT_TOOLSET = "agent-file-tools"
 
 
 def _latest_agent_run(md, model, cur_ver):
     """挑出「当前判分器下、该基准模型的最近一次 agent 档测量」，连同挑不出来的原因。
 
     三条规矩沿用契约 §6.2/§6.3，一个字没放松（放开的只有难度本身，见 difficulty_tier）：
-      ① 只认 agent 档（toolset=agent-file-tools），单发盲解只作便宜预筛、不定级；
+      ① 只认 agent 档（toolset=agent-file-python，旧 agent-file-tools 也认、但优先现行考法），
+         单发盲解只作便宜预筛、不定级；
       ② scorerVersion 必须等于任务卡当前值 —— 改了判分器就等于换了考试，旧数字作废；
       ③ model/toolset/budget/scorerVersion/nRuns 缺任一项的条目不算数（换哪一项都不可比）。
     """
     hit = [e for e in md if str(e.get("model", "")).lower() == model
            and str(e.get("scorerVersion", "")).strip() == cur_ver
-           and str(e.get("toolset", "")) == "agent-file-tools"
+           and str(e.get("toolset", "")) in (AGENT_TOOLSET, LEGACY_AGENT_TOOLSET)
            and not [k for k in _MD_REQUIRED if not e.get(k)]]
     if hit:
-        return sorted(hit, key=lambda x: str(x.get("measuredAt", "")))[-1], ""
+        return sorted(hit, key=lambda x: (str(x.get("toolset")) == AGENT_TOOLSET,
+                                          str(x.get("measuredAt", ""))))[-1], ""
     same_model = [e for e in md if str(e.get("model", "")).lower() == model]
     cur_any = [e for e in same_model
                if str(e.get("scorerVersion", "")).strip() == cur_ver]
@@ -266,6 +272,11 @@ def difficulty_tier(task):
     if tier in ("L3", "L4") and abs(ffpr - 1.0 / 3) < 1e-9 and (front.get("nRuns") or 0) < 6:
         hedge.append("前沿档 fpr 正落在 L3|L4 边界 1/3 上而 nRuns=%d < 6，需补跑"
                      % (front.get("nRuns") or 0))
+    legacy = [n for n, e in (("便宜档", cheap), ("前沿档", front))
+              if e and str(e.get("toolset")) == LEGACY_AGENT_TOOLSET]
+    if legacy:
+        hedge.append("%s 是旧考法 agent-file-tools（不能跑代码，偏硬），需按 %s 重测"
+                     % ("/".join(legacy), AGENT_TOOLSET))
     src = "推定" if hedge else "实测"
     return True, {**base, "tier": tier, "级别来源": src, "可判定": True,
                   "说明": note, **({"待补": hedge} if hedge else {})}
