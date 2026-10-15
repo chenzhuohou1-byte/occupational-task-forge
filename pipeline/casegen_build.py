@@ -139,7 +139,7 @@ class Hardness:
     """结构性难度下限。不是难度本身（难度只认 N7 agent 档实测），而是把「一眼心算完」的软题
     在花 crosscheck/物化/N7 之前就挡回返修。首个自动案例（4 条标准 × 6 行、两份材料并成一个
     文件）便宜档 agent 3/3 满分，就是缺这道门。"""
-    min_files: int = 3          # 独立材料份数；ALE P25=3
+    min_files: int = 5          # 独立材料份数；+核算规则.md 共 6 份，对标 ALE 中位 6
     min_total_chars: int = 25000  # 全部附件文本字符数；对标 ALE 中位 26504
     min_max_file_chars: int = 7000  # 至少一份附件达到这个量级；对标 ALE P25=7077
     min_main_rows: int = 200     # 最大那份业务材料记录数；对标 ALE 中位 248
@@ -678,7 +678,9 @@ def materialize_messages(rules_text, solve_text):
         "  · 规则.md 会被拷成 input/核算规则.md，scoringBasis 每条 {point, source:'material', ref}，"
         "ref 只能指向它或 render_inputs 产出的文件名；\n"
         "  · prompt 与交付要求里**不得出现任何具体数值**，prompt 只派活、不点破特殊情形、不给解题步骤；\n"
-        "  · task_id 用小写英文/拼音加连字符、以 -syn-001 结尾。\n"
+        "  · task_id 用小写英文/拼音加连字符、以 -001 结尾；**任务名必须是真实业务名**，"
+        "不得带「(合成)」「模拟」「示例」「demo」等暴露这是造出来的题的字样"
+        "（出处信息由框架写进数据集 sidecar，不进题面）。\n"
         "**不要**定义 INSTANCE（框架会从参数生成器里挑一个规模达标、覆盖所有 TRAPS 的世界）；"
         "也**不要**写 worlds/solve（它们在别的文件里）。\n\n"
         "规则：\n%s\nsolve.py：\n%s\n下面是另一个职业的 物化.py 范例（只学这 4 个符号的写法）：\n%s\n"
@@ -1304,10 +1306,13 @@ def _selftest():
                     "_render_scale = render_inputs\n"
                     "def render_inputs(world):\n"
                     "    out = _render_scale(world)\n"
+                    # 范例只有 3 份材料，补到 5 份（min_files 默认值）才能验证量级维度本身
                     "    out['业务背景.txt'] = '测试背景说明' * 5000\n"
+                    "    out['科目对照表.txt'] = '测试科目对照' * 100\n"
+                    "    out['审批流水.txt'] = '测试审批记录' * 100\n"
                     "    return out\n")
         check(hardness_check(big, Hardness(min_traps=2)) == [],
-              "扩大到 200 行和 25000 字符以上的夹具通过量级门（测试填充仅用于边界验证）")
+              "扩大到 5 份材料 / 200 行 / 25000 字符以上的夹具通过量级门（测试填充仅用于边界验证）")
         check(any("判分格子" in p for p in hardness_check(
             big, Hardness(min_traps=2, min_scored_cells=1000000))),
               "输出格子不足时独立拒收")
