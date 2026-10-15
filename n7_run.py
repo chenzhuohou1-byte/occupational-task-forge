@@ -134,8 +134,12 @@ def main():
     tier = os.environ.get("N7_TIER", "").strip()
     mode = os.environ.get("N7_MODE", "blind").strip()    # blind=单发盲解 / agent=多步带文件工具
     max_steps = int(os.environ.get("N7_MAX_STEPS", "20"))
+    # agent 档工具集：python（默认，可跑代码，对齐 ALE 沙箱的 run_command）/ file（旧考法，仅对照）
+    tools = os.environ.get("N7_TOOLS", "python").strip()
     if mode not in ("blind", "agent"):
         sys.exit("N7_MODE 只认 blind / agent，给的是 %r" % mode)
+    if tools not in agentsolve.TOOLSETS:
+        sys.exit("N7_TOOLS 只认 %s，给的是 %r" % (list(agentsolve.TOOLSETS), tools))
     client = llm.get_client(cfg.llm)
     cost = CostTracker()
 
@@ -146,7 +150,7 @@ def main():
 
     def _one(td):
         if mode == "agent":
-            _, r = agentsolve.agent_solve(task, client, cost, max_steps, trace_dir=td)
+            _, r = agentsolve.agent_solve(task, client, cost, max_steps, trace_dir=td, tools=tools)
         else:
             _, r = qc.n7_blind_solve(task, client, cost, trace_dir=td)
         return r
@@ -198,7 +202,7 @@ def main():
     entry = {
         "model": cfg.llm.model,
         # 换工具数字就不可比（§6.2）：单发盲解 vs 多步带文件工具是两种考法
-        "toolset": "single-shot-blind" if mode == "blind" else "agent-file-tools",
+        "toolset": "single-shot-blind" if mode == "blind" else agentsolve.TOOLSETS[tools],
         "budget": {"maxSteps": 1 if mode == "blind" else max_steps,
                    "maxTokens": int(os.environ.get("ALE_LLM_MAX_TOKENS", "16000")),
                    "reasoningEffort": os.environ.get("ALE_LLM_REASONING_EFFORT", "") or None,

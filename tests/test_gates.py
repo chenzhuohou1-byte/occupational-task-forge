@@ -33,7 +33,7 @@ class FakeTask:
         self.dir = os.path.join(ROOT, "tasks", "_demo")
 
 
-def md(model, fpr, n=3, toolset="agent-file-tools", sv="1.0", at="2026-10-14"):
+def md(model, fpr, n=3, toolset="agent-file-python", sv="1.0", at="2026-10-14"):
     return {"model": model, "toolset": toolset, "budget": {"maxSteps": 20},
             "scorerVersion": sv, "nRuns": n, "fullPassRate": fpr,
             "meanScore": 0.5, "measuredAt": at}
@@ -103,6 +103,19 @@ def test_tier_rejects():
 
     ok, t, _, d = tier_of([md(CHEAP, 0.0, at="2026-10-01"), md(CHEAP, 1.0, at="2026-10-14")])
     check((ok, t) == (True, "L1"), "同档多次测量取 measuredAt 最近的一条")
+
+    ok, t, src, d = tier_of([md(CHEAP, 0.0, toolset="agent-file-tools")])
+    check((ok, t, src) == (True, "L3+", "推定") and "旧考法" in str(d.get("待补")),
+          "只有旧考法 agent-file-tools（不能跑代码）→ 照样定级但降推定、提示重测")
+
+    ok, t, src, _ = tier_of([md(CHEAP, 1.0, toolset="agent-file-python", at="2026-10-01"),
+                             md(CHEAP, 0.0, toolset="agent-file-tools", at="2026-10-14")])
+    check((ok, t, src) == (True, "L1", "实测"),
+          "现行考法与旧考法并存 → 优先现行考法（哪怕旧考法更新）")
+
+    ok, t, src, d = tier_of([md(CHEAP, 0.0), md(FRONT, 0.0, toolset="agent-file-tools")])
+    check((ok, t, src) == (True, "L4", "推定") and "前沿档" in str(d.get("待补")),
+          "前沿档是旧考法 → L4 但降推定")
 
 
 def test_purpose():
