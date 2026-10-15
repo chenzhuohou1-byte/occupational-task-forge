@@ -367,31 +367,40 @@ def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, sub
 def n7_commands(task_dir):
     """接收后下一步：N7 agent 档实测命令（直接可粘贴，路径全绝对、无行内注释）。
 
-    maxSteps 按契约 §6.3：附件份数 + 交付文件数 + 50% 余量，最低 20。先跑便宜档；
-    便宜档 fullPassRate 必须 = 0，否则直接退役重产、不必再花钱跑前沿档。
+    maxSteps 按契约 §6.3 并按**页数**算：read_file 单次只返回一页（ALE_N7_PAGE_CHARS，默认 6000），
+    一份 4 万字符的表要读 7 次。按文件数算会让 agent 在读完材料之前就步数耗尽——而那被判成
+    测量故障、不是难度。先跑便宜档；便宜档 fullPassRate 必须 = 0，否则直接退役重产。
     """
     import math
     import shlex
+
+    from . import agentsolve
     from .config import PipelineConfig
     card = json.load(open(os.path.join(task_dir, "task_card.json"), encoding="utf-8"))
     indir = os.path.join(task_dir, "assets", "input")
     n_in = len([f for f in os.listdir(indir) if os.path.isfile(os.path.join(indir, f))])
     n_out = len(card.get("交付要求") or {})
-    steps = max(20, int(math.ceil((n_in + n_out) * 1.5)))
+    try:   # 按 agent 实际读到的文本算页数；读不出来就退回按文件数（不让测题计划算不出来）
+        parsed, _ = qc._read_inputs(indir, limit=agentsolve.FILE_LIMIT)
+        n_pages = agentsolve.pages_needed(parsed)
+    except Exception:  # noqa: BLE001
+        n_pages = n_in
+    steps = max(20, int(math.ceil((n_pages + n_out) * 1.5)))
     sv = str((card.get("evaluation") or {}).get("scorerVersion") or "1.0")
     repo = os.path.dirname(_HERE)
     n7dir = os.path.join(os.path.abspath(PipelineConfig().runs_dir), "n7")
 
     def cmd(model, tier, tag):
-        return ("cd %s && ALE_LLM_MODEL=%s N7_MODE=agent N7_RUNS=3 N7_MAX_STEPS=%d N7_TIER=%s "
+        return ("cd %s && ALE_LLM_MODEL=%s N7_MODE=agent N7_RUNS=10 N7_MAX_STEPS=%d N7_TIER=%s "
                 "N7_SCORER_VERSION=%s N7_TASK=%s N7_OUT=%s python3 n7_run.py") % (
             shlex.quote(repo), model, steps, tier, sv, shlex.quote(os.path.abspath(task_dir)),
             shlex.quote(os.path.join(n7dir, "%s-agent-%s.json" % (card["task_id"], tag))))
-    return {"task_id": card["task_id"], "maxSteps": steps, "附件数": n_in, "交付数": n_out,
+    return {"task_id": card["task_id"], "maxSteps": steps, "附件数": n_in,
+            "附件页数": n_pages, "交付数": n_out,
             "便宜档": cmd("glm-5.3-flash", "便宜档", "glm"),
             "前沿档": cmd("gpt-5.5", "前沿档", "gpt55"),
             "说明": "先跑便宜档：fullPassRate>0 → 太软，退役重产（§6.4），不跑前沿档；"
-                  "=0 再跑前沿档，要 ≤1/3；0<fpr≤1/3 补到 6 跑。"}
+                  "=0 再跑前沿档，要 ≤1/3。nRuns 默认 10（3 跑分不开 L1-L4，见契约 §6.3）。"}
 
 
 def build_case(subdomain, out_dir, producer, max_rounds=3, n=200, seed=0, resume=False, log=None,
