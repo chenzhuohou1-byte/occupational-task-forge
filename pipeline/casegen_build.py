@@ -11,8 +11,11 @@
 FrameworkError（CLI 退出码都是 3）。--resume 复用已产出的文件续跑，不重复花钱。
 每次模型调用的 prompt / 原始响应落盘到 <out>/trace/；进度打到 stderr。
 """
+import copy
 import dataclasses
 import inspect
+import csv
+import io
 import json
 import os
 import re
@@ -32,6 +35,20 @@ CODE_FILES = LOGIC_FILES + MAT_FILES                     # 完整案例代码（
 REFS_DIR = "参考资料"          # 人工抓来的真实口径材料（--refs 拷进来），含 来源.json
 REFS_MANIFEST = "来源.json"
 REFS_SECTION = "## 引用来源"   # 规则.md 里声明借用了哪些真实值、各自出自哪份材料
+CALIBER_SECTION = "## 口径契约"  # solve 与独立复核员读同一份规则，口径不钉死就会各做各的 → crosscheck 不收敛
+# 跨实现分歧的三大来源：取整、键/文本规范化、数组排序。规则里必须把它们写成唯一确定的做法，
+# 两份独立实现才算得出同一个答案；这段原文直接拼进 规则.md 的硬要求，让 solve2 也照同一口径实现。
+CALIBER_SPEC = (
+    "必须单列「%s」一节，把下面三类口径写成**唯一确定**的做法（独立复核员只看规则，含糊就会算出别的答案）：\n"
+    "   a. **数值口径**：一律用 decimal.Decimal 计算，禁止 float；写明量化精度（金额 2 位）、"
+    "量化模式固定 ROUND_HALF_UP，并写明**在哪一步量化**（逐笔先量化再汇总，还是明细保留全精度、"
+    "只在最终输出量化）——两份实现必须在同一节点、同一模式取整；\n"
+    "   b. **键/文本规范化**：给出唯一的规范化函数，按**固定顺序**写清步骤（去首尾空格 → 全角转半角 → "
+    "大小写折叠 → 去前导零，按业务取舍但顺序要定死）；所有 join 关联键与输出行键**都先过这个函数**，"
+    "不许某处规范化、某处不规范化；\n"
+    "   c. **排序口径**：每个数组输出给出确定性排序键（如按行键升序）；即使注明「顺序不计分」，"
+    "也要写明排序规则，便于复核逐条对齐。"
+) % CALIBER_SECTION
 # 文件块用显式标记而非 ``` 围栏：规则.md 里本身就有 ``` 代码块，套围栏会被截断
 _FILE_RE = re.compile(r"<<<FILE\s+([^>\n]+?)\s*>>>\n(.*?)<<<END>>>", re.S)
 _FENCE_RE = re.compile(r"^\s*```[^\n]*\n(.*?)\n?```\s*$", re.S)
@@ -122,18 +139,22 @@ class Hardness:
     """结构性难度下限。不是难度本身（难度只认 N7 agent 档实测），而是把「一眼心算完」的软题
     在花 crosscheck/物化/N7 之前就挡回返修。首个自动案例（4 条标准 × 6 行、两份材料并成一个
     文件）便宜档 agent 3/3 满分，就是缺这道门。"""
-    min_files: int = 3          # render_inputs 产出的独立材料份数（不含 核算规则.md）
-    min_main_rows: int = 40     # 记录数最多那份材料（业务明细）的下限
-    min_ref_rows: int = 15      # 记录数第二多那份材料（标准/参照表）的下限
-    min_traps: int = 3          # 物化.TRAPS 至少几类陷阱
-    trap_ratio: float = 0.10    # 随机世界（boundary=False）里每类陷阱至少出现在这么多比例的世界
-    sample: int = 50            # 统计 trap_ratio 用的随机世界数
-    max_attachment_chars: int = 7800  # 单个附件字符数上限（对齐 N7 读取上限 8000，留 200 余量）
+    min_files: int = 3          # 独立材料份数；ALE P25=3
+    min_total_chars: int = 25000  # 全部附件文本字符数；对标 ALE 中位 26504
+    min_max_file_chars: int = 7000  # 至少一份附件达到这个量级；对标 ALE P25=7077
+    min_main_rows: int = 200     # 最大那份业务材料记录数；对标 ALE 中位 248
+    min_ref_rows: int = 15       # 第二大那份材料记录数
+    min_scored_cells: int = 60   # 防止行数/附件虚胖，交付判分格子不能太少
+    min_traps: int = 3           # 物化.TRAPS 至少几类特殊情形
+    trap_ratio: float = 0.10     # 随机世界里每类陷阱至少出现的比例
+    sample: int = 50             # 统计 trap_ratio 用的随机世界数
+    max_attachment_chars: int = 150000  # agent 分页可读；只防撑爆上下文，不做真实度上限
 
 
 DEFAULT_HARDNESS = Hardness()
-RELAXED = Hardness(min_files=0, min_main_rows=0, min_ref_rows=0, min_traps=0, trap_ratio=0.0,
-                   max_attachment_chars=0)
+RELAXED = Hardness(min_files=0, min_total_chars=0, min_max_file_chars=0,
+                   min_main_rows=0, min_ref_rows=0, min_scored_cells=0,
+                   min_traps=0, trap_ratio=0.0, max_attachment_chars=0)
 
 
 def _records(name, text):
@@ -158,6 +179,39 @@ def _safe_trap(fn, world):
         return bool(fn(copy.deepcopy(world)))
     except Exception:  # noqa: BLE001 TRAPS 里某个函数抛错不该中断挑世界
         return False
+
+
+def _score_cells(files):
+    """估算 deliver 产物的判分格子数，用来挡「附件很大但输出只有一个汇总数」的虚胖题。"""
+    total = 0
+    for name, text in (files or {}).items():
+        if name.endswith(".csv"):
+            try:
+                rows = list(csv.DictReader(io.StringIO(text)))
+                total += len(rows) * max(0, len(rows[0]) - 1) if rows else 0
+            except (csv.Error, TypeError):
+                total += 0
+        elif name.endswith(".json"):
+            try:
+                def leaves(v):
+                    if isinstance(v, dict):
+                        return sum(leaves(x) for x in v.values())
+                    if isinstance(v, list):
+                        return sum(leaves(x) for x in v)
+                    return 1
+                total += leaves(json.loads(text))
+            except (ValueError, TypeError):
+                total += 0
+        else:
+            total += 1 if str(text).strip() else 0
+    return total
+
+
+def _render_score_cells(case_dir, world):
+    """按 solve + deliver 估算当前世界的实际判分格子；框架故障不在难度门里吞掉。"""
+    m = casegen._load(os.path.join(case_dir, "物化.py"), "_cb_cells_m")
+    s = casegen._load(os.path.join(case_dir, "solve.py"), "_cb_cells_s")
+    return _score_cells(m.deliver(s.solve(copy.deepcopy(world))))
 
 
 def choose_instance(case_dir, spec=DEFAULT_HARDNESS, seed=0, scan=400):
@@ -185,9 +239,16 @@ def choose_instance(case_dir, spec=DEFAULT_HARDNESS, seed=0, scan=400):
         main = szs[0] if szs else 0
         ref = szs[1] if len(szs) > 1 else 0
         max_char = max((len(t) for t in files.values()), default=0)
+        total_char = sum(len(t) for t in files.values())
+        try:
+            scored = _render_score_cells(case_dir, w)
+        except Exception:
+            scored = 0
         covered = sum(1 for fn in traps.values() if _safe_trap(fn, w))
-        if (len(files) >= spec.min_files and main >= spec.min_main_rows
-                and ref >= spec.min_ref_rows and covered == len(traps)
+        if (len(files) >= spec.min_files and total_char >= spec.min_total_chars
+                and max_char >= spec.min_max_file_chars and main >= spec.min_main_rows
+                and ref >= spec.min_ref_rows and scored >= spec.min_scored_cells
+                and covered == len(traps)
                 and (not spec.max_attachment_chars or max_char <= spec.max_attachment_chars)):
             return w
         key = (covered, main, ref)
@@ -200,7 +261,7 @@ def hardness_check(case_dir, spec=DEFAULT_HARDNESS, seed=0, world=None):
     """返回不达标项列表（[] 为达标）。只看选定世界的渲染结果与 TRAPS，不调模型。
     world 由调用方（choose_instance）挑好传入，物化与难度门用同一个世界。"""
     import copy
-    if not any(dataclasses.astuple(spec)[:5]):
+    if not any(getattr(spec, f.name) for f in dataclasses.fields(spec) if f.name != "sample"):
         return []                     # RELAXED：不设门（自测里给小范例案例用）
     m = casegen._load(os.path.join(case_dir, "物化.py"), "_cb_hard")
     gen = casegen._load(os.path.join(case_dir, "参数生成器.py"), "_cb_hard_gen")
@@ -208,12 +269,19 @@ def hardness_check(case_dir, spec=DEFAULT_HARDNESS, seed=0, world=None):
         world = getattr(m, "INSTANCE", None) or gen.worlds(1, seed)[0]
     files = m.render_inputs(copy.deepcopy(world))
     probs = []
+    total_char = sum(len(t) for t in files.values())
+    max_char = max((len(t) for t in files.values()), default=0)
+    if spec.min_total_chars and total_char < spec.min_total_chars:
+        probs.append("附件文本合计只有 %d 字符，至少 %d（对标 ALE P25~中位量级；扩大业务流水或增加独立材料）"
+                     % (total_char, spec.min_total_chars))
+    if spec.min_max_file_chars and max_char < spec.min_max_file_chars:
+        probs.append("最大单份附件只有 %d 字符，至少要有一份达到 %d（避免所有材料都是小玩具）"
+                     % (max_char, spec.min_max_file_chars))
     if spec.max_attachment_chars:
         for nm, t in files.items():
             if len(t) > spec.max_attachment_chars:
-                probs.append("附件 %s 有 %d 字符，超过上限 %d（N7 单文件读取上限 8000，超了会被截断、测不出难度）："
-                             "JSON 用 json.dumps(obj, ensure_ascii=False, separators=(',', ':')) 不带缩进，"
-                             "或减小数据规模 / 拆成多份材料" % (nm, len(t), spec.max_attachment_chars))
+                probs.append("附件 %s 有 %d 字符，超过上下文保护上限 %d（拆成多份材料或降低单份规模；agent 支持分页）"
+                             % (nm, len(t), spec.max_attachment_chars))
     if len(files) < spec.min_files:
         probs.append("render_inputs 只产出 %d 份材料 %s，至少要 %d 份**独立**附件（每份材料单独一个文件，"
                      "不得把标准表和明细并进一个文件）" % (len(files), sorted(files), spec.min_files))
@@ -227,6 +295,15 @@ def hardness_check(case_dir, spec=DEFAULT_HARDNESS, seed=0, world=None):
     if ref[0] < spec.min_ref_rows:
         probs.append("选不出达标世界：第二大那份材料 %s 只有 %d 条记录，至少 %d 条"
                      % (ref[1], ref[0], spec.min_ref_rows))
+    if spec.min_scored_cells:
+        try:
+            scored = _render_score_cells(case_dir, world)
+        except Exception as e:  # noqa: BLE001
+            scored = 0
+            probs.append("无法统计交付判分格子数：%s" % type(e).__name__)
+        if scored < spec.min_scored_cells:
+            probs.append("交付只有约 %d 个判分格子，至少 %d（附件再大但只输出一个汇总数仍属虚胖题）"
+                         % (scored, spec.min_scored_cells))
     traps = getattr(m, "TRAPS", None) or {}
     if not isinstance(traps, dict) or len(traps) < spec.min_traps:
         probs.append("物化.TRAPS 只有 %d 类陷阱，至少 %d 类（{陷阱名: world → 出现次数}，与规则一一对应）"
@@ -324,7 +401,7 @@ def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, sub
     err = refs_trace_check(case_dir)      # 给了参考资料才设此门
     if err:
         return "refs", err, None
-    gate_on = any(dataclasses.astuple(hardness)[:5])
+    gate_on = any(getattr(hardness, f.name) for f in dataclasses.fields(hardness) if f.name != "sample")
     world = None
     try:
         if gate_on:
@@ -532,7 +609,8 @@ def rules_messages(subdomain, refs=None, manifest=None):
         "%s\n%s\n硬要求：\n"
         "1. 至少 %d 份**独立材料**（如 标准/限值表 + 业务明细 + 登记/委托/台账），每份材料将来单独成一个附件文件，"
         "不得合并成一个文件；计算必须跨材料按关联键 join；\n"
-        "2. 规模：业务明细不少于 %d 行、标准/参照表不少于 %d 条（数据由参数生成器产出，规则里只写结构）；\n"
+        "2. 规模：业务明细不少于 %d 行、标准/参照表不少于 %d 条；全部附件文本合计至少 %d 字符，"
+        "至少一份附件达到 %d 字符，交付结果至少有 %d 个可评分格子（数据由参数生成器产出，规则里只写结构）；\n"
         "3. 「## 材料」一节给出世界参数的精确 JSON 结构与字段名（出题方与独立复核员都只能据此取数），"
         "并写明每份材料对应哪个附件文件；\n"
         "4. 全部费率/阈值/封顶/判定口径写进规则，答案由规则唯一确定，不引用规则外的法规或常识"
@@ -545,14 +623,16 @@ def rules_messages(subdomain, refs=None, manifest=None):
         "在「## 输出」里把它定义成对象数组，第一个字段是**字符串**行键（如 "
         "{\"样品编号\": \"S-007\", \"原因\": \"…\"}）；\n"
         "7. 「## 输出」一节明确返回 JSON 的结构与字段名；对象数组第一个字段是行键；"
-        "集合语义的数组注明「顺序不计分」；金额保留 2 位小数；\n"
-        "8. 纯虚构、可公开（参考资料里的真实口径除外，它们按上面的要求照抄并声明出处）。\n\n"
+        "集合语义的数组注明「顺序不计分」；\n"
+        "8. %s\n"
+        "9. 纯虚构、可公开（参考资料里的真实口径除外，它们按上面的要求照抄并声明出处）。\n\n"
         "下面是另一个子域的范例，只示结构、不要照抄内容；"
         "**范例规模很小、只有两份材料，你的案例必须满足上面的规模与特殊情形要求**：\n%s\n"
         "只输出：\n<<<FILE 规则.md>>>\n（规则原文）\n<<<END>>>") % (
             subdomains.anchor(subdomain), _refs_block(refs or {}, manifest),
-            h.min_files, h.min_main_rows, h.min_ref_rows, REFS_SECTION,
-            h.min_traps, _fblock("规则.md", _ex("规则.md")))}]
+            h.min_files, h.min_main_rows, h.min_ref_rows, h.min_total_chars,
+            h.min_max_file_chars, h.min_scored_cells, REFS_SECTION,
+            h.min_traps, CALIBER_SPEC, _fblock("规则.md", _ex("规则.md")))}]
 
 
 def code_messages(rules_text):
@@ -565,7 +645,9 @@ def code_messages(rules_text):
         "再用 random.Random(seed) 补满到 n 个；世界结构严格按规则「材料」。"
         "随机段也要**按概率注入每类特殊情形**（每类至少出现在 %d%% 以上的随机世界里），"
         "不能只靠边界世界碰到。\n"
-        "- solve.py：def solve(world) -> dict，严格按规则「输出」。\n"
+        "- solve.py：def solve(world) -> dict，严格按规则「输出」。"
+        "数值一律 decimal.Decimal、取整节点与模式严格照规则「口径契约」，键与输出行键先过规则的规范化函数，"
+        "数组按规则排序口径输出；\n"
         "- 断言.py：def assertions(world, answer) -> list[str]，写跨材料恒等式（如汇总=明细之和、"
         "清单⊆行键集合），全部成立返回 []。\n\n规则：\n%s\n"
         "下面是另一个职业的这三个文件的范例（只学结构）：\n%s\n"
@@ -585,9 +667,9 @@ def materialize_messages(rules_text, solve_text):
         "一一对应，至少 %d 类。world 的结构即规则「材料」里那个 JSON。\n"
         "- render_inputs(world) -> {文件名: 文本}：把 world 的每份材料**各渲染成一个独立文件**"
         "（共 ≥ %d 个，csv 或 json），文件名用中文业务名。这是交给被测 agent 的附件；\n"
-        "  每个附件的文本长度必须 ≤ %d 字符（评测单文件读取上限 8000，超了会被截断、无法测难度）："
-        "JSON 一律 json.dumps(obj, ensure_ascii=False, separators=(',', ':'))，不带缩进、不要多余空格；"
-        "若某份材料数据量偏大，优先用更紧凑的字段名或拆成多份材料，不要堆进一个超大文件。\n"
+        "  全部附件文本合计至少 %d 字符，最大那份材料至少 %d 字符，业务明细至少 %d 行；"
+        "单份附件不得超过 %d 字符（agent 支持分页读取，超大单份会撑爆上下文）；"
+        "JSON 一律 json.dumps(obj, ensure_ascii=False, separators=(',', ':'))，不带缩进；\n"
         "- deliver(answer) -> {文件名: 文本}：把 solve(world) 的返回渲染成交付文件，"
         "键名/结构与 solve.py 的输出严格对应；交付用 csv（首列行键）或 json。\n"
         "- TASK：dict，含 领域/任务名/task_id/子域/prompt/交付要求/scoringBasis，"
@@ -601,7 +683,8 @@ def materialize_messages(rules_text, solve_text):
         "也**不要**写 worlds/solve（它们在别的文件里）。\n\n"
         "规则：\n%s\nsolve.py：\n%s\n下面是另一个职业的 物化.py 范例（只学这 4 个符号的写法）：\n%s\n"
         "只输出：\n<<<FILE 物化.py>>>\n（代码）\n<<<END>>>") % (
-            h.min_traps, h.min_files, h.max_attachment_chars,
+            h.min_traps, h.min_files, h.min_total_chars, h.min_max_file_chars,
+            h.min_main_rows, h.max_attachment_chars,
             _fblock("规则.md", rules_text), _fblock("solve.py", solve_text),
             _fblock("物化.py", _ex("物化.py")))}]
 
@@ -612,8 +695,13 @@ def repair_messages(files, problem):
         "【步骤:返修】这个案例没通过校验：\n%s\n\n当前文件：\n%s\n"
         "请判断原因并修正：规则有歧义或缺漏 → 改 规则.md（独立复核员只看规则，必须写到无歧义）；"
         "结构性难度不达标 → 按提示扩材料份数/规模/特殊情形，规则要跟着改的一并改规则；"
-        "生成器/solve/断言/物化 写错 → 改对应文件。只输出需要修改的文件，不要输出 solve2.py。")
-        % (problem, cur)}]
+        "生成器/solve/断言/物化 写错 → 改对应文件。\n"
+        "**若是两份实现对不上（crosscheck）**：十有八九是「口径契约」没钉死——先看反例差异属于哪类"
+        "（金额差 0.01 之类=取整节点/模式不一致；大小写或前导零不同=键规范化不一致；"
+        "同一组数值分到不同键=分组/排序口径不一致），**到规则「%s」里把这条口径写成唯一确定的做法**，"
+        "再让 solve.py 照改；不要只在冒出来的那个字段上打补丁，否则下一轮换个字段又对不上。\n"
+        "只输出需要修改的文件，不要输出 solve2.py。")
+        % (problem, cur, CALIBER_SECTION)}]
 
 
 def solve2_messages(rules_text):
@@ -629,6 +717,8 @@ def solve2_messages(rules_text):
             "【步骤:独立实现】下面是一份闭世界规则。仅依据它，独立用 Python 实现 def solve(world) -> dict：\n"
             "- world 的结构与字段名以规则「材料」一节为准；\n"
             "- 返回结构与字段名严格按规则「输出」一节；\n"
+            "- 数值计算、取整、键/文本规范化、数组排序一律严格照规则「口径契约」一节"
+            "（用 decimal.Decimal、ROUND_HALF_UP、在规则指定节点量化；关联键与行键先过规则给的规范化函数）；\n"
             "- 只用 Python 标准库，不读写文件，不 import 非标准库模块；只输出一个文件 solve2.py。\n\n"
             + _fblock("规则.md", rules_text)
             + "\n输出格式：\n<<<FILE solve2.py>>>\n（代码）\n<<<END>>>")},
@@ -1186,15 +1276,34 @@ def _selftest():
                 "    return out\n\n\n"
                 "import json\n"
                 "TRAPS = {k: v for k, v in TRAPS.items() if k != '单价等于封顶'}\n")
-        hp = hardness_check(big, Hardness(min_traps=2))
+        hp = hardness_check(big, Hardness(min_files=3, min_total_chars=0, min_max_file_chars=0,
+                                          min_main_rows=40, min_ref_rows=15, min_scored_cells=0,
+                                          min_traps=2))
         check(hp == [] and _records("a.csv", "h\n1\n2\n") == 2
               and _records("b.json", '{"x": [1, 2, 3], "y": 1}') == 3,
               "难度门达标路径：3 份材料 / 40 行 / 18 条 / 陷阱覆盖够 → 放行%s" % ("" if hp == [] else "：%s" % hp))
 
         # 附件字符数门：给一个极小上限，任何附件都超 → 难度门应报「超过上限」
         tiny = hardness_check(big, Hardness(min_traps=2, max_attachment_chars=50))
-        check(any("超过上限" in p for p in tiny),
+        check(any("超过上下文保护上限" in p for p in tiny),
               "附件字符数门：附件超过上限 → 难度门报「超过上限」%s" % ("；" + ";".join(tiny) if tiny else ""))
+
+        scale_errors = hardness_check(big, Hardness(min_traps=2))
+        check(any("合计只有" in p for p in scale_errors)
+              and any("最大单份附件只有" in p for p in scale_errors),
+              "原小规模夹具被新的量级下限拦截")
+        with open(os.path.join(big, "物化.py"), "a", encoding="utf-8") as f:
+            f.write("\nINSTANCE['明细'] = [dict(INSTANCE['明细'][i % 40], 行号=i + 1) for i in range(200)]\n"
+                    "_render_scale = render_inputs\n"
+                    "def render_inputs(world):\n"
+                    "    out = _render_scale(world)\n"
+                    "    out['业务背景.txt'] = '测试背景说明' * 5000\n"
+                    "    return out\n")
+        check(hardness_check(big, Hardness(min_traps=2)) == [],
+              "扩大到 200 行和 25000 字符以上的夹具通过量级门（测试填充仅用于边界验证）")
+        check(any("判分格子" in p for p in hardness_check(
+            big, Hardness(min_traps=2, min_scored_cells=1000000))),
+              "输出格子不足时独立拒收")
 
         # 框架挑 INSTANCE：物化不写 INSTANCE 时，choose_instance 从生成器里挑一个覆盖所有 TRAP 的世界
         noinst = os.path.join(tmp, "noinst_case")
