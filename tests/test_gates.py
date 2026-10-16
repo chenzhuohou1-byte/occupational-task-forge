@@ -49,14 +49,15 @@ def tier_of(entries, **kw):
 
 
 def test_tiers():
-    print("难度分级（契约 §6.3 新口径）")
+    print("难度分级（契约 §6.3 第二版：便宜档只认 L1，前沿档按 ALE 刻度切）")
     CHEAP, FRONT = "glm-5.3-flash", "Claude Sonnet 5.5"
 
     ok, t, src, _ = tier_of([md(CHEAP, 1.0)])
     check((ok, t, src) == (True, "L1", "实测"), "便宜档 fpr=1.0 → L1 实测（前沿档不必跑）")
 
-    ok, t, src, _ = tier_of([md(CHEAP, 1.0 / 3)])
-    check((ok, t, src) == (True, "L2", "实测"), "便宜档 fpr=1/3 → L2 实测（便宜档单独定级）")
+    ok, t, src, d = tier_of([md(CHEAP, 1.0 / 3)])
+    check((ok, t, src) == (True, "L2", "推定") and d.get("待补"),
+          "便宜档 fpr=1/3、缺前沿档 → L2 推定（便宜档不再单独定 L2）")
 
     ok, t, src, d = tier_of([md(CHEAP, 2.0 / 3)])
     check((ok, t, src) == (True, "L1", "推定") and d.get("待补"),
@@ -65,19 +66,25 @@ def test_tiers():
     ok, t, src, _ = tier_of([md(CHEAP, 2.0 / 3, n=6)])
     check((ok, t, src) == (True, "L1", "实测"), "同上但补到 6 跑 → L1 实测")
 
-    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 1.0)])
-    check((ok, t, src) == (True, "L3", "实测"), "便宜档 0 + 前沿档 1.0 > 1/3 → L3 实测")
+    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.8, n=10)])
+    check((ok, t, src) == (True, "L2", "实测"), "便宜档 0 + 前沿档 80% > 30% → L2（≈ ALE 最易层）")
 
-    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.0)])
-    check((ok, t, src) == (True, "L4", "实测"), "便宜档 0 + 前沿档 0 ≤ 1/3 → L4 实测")
+    ok, t, src, _ = tier_of([md(CHEAP, 1.0 / 3), md(FRONT, 0.2, n=10)])
+    check((ok, t, src) == (True, "L3", "实测"), "前沿档 20%（10%–30%）→ L3，便宜档非 0 也不挡")
 
-    ok, t, src, d = tier_of([md(CHEAP, 0.0), md(FRONT, 1.0 / 3)])
-    check((ok, t, src) == (True, "L4", "推定") and d.get("待补"),
-          "前沿档正落在 L3|L4 边界 1/3 且 nRuns=3 → L4 但降推定级")
+    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.3, n=10)])
+    check((ok, t, src) == (True, "L3", "实测"), "前沿档正好 30% → L3（边界含）")
+
+    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.1, n=10)])
+    check((ok, t, src) == (True, "L4", "实测"), "前沿档正好 10% → L4（边界含）")
+
+    ok, t, src, d = tier_of([md(CHEAP, 0.0), md(FRONT, 0.0, n=3)])
+    check((ok, t, src) == (True, "L4", "推定") and "nRuns" in str(d.get("待补")),
+          "前沿档只有 3 跑 → 照给 L4 但降推定、要求补到 10 跑")
 
     ok, t, src, d = tier_of([md(CHEAP, 0.0)])
     check((ok, t, src) == (True, "L3+", "推定"),
-          "便宜档 0、缺前沿档 → 推定级 L3+（不是未测，§6.5 省钱路线）")
+          "便宜档 0、缺前沿档 → 推定级 L3+（不是未测）")
 
 
 def test_tier_rejects():
@@ -98,7 +105,7 @@ def test_tier_rejects():
     ok, t, _, _ = tier_of([bad])
     check((ok, t) == (False, None), "条目缺 budget → 不算数（换预算就不可比，§6.2）")
 
-    ok, t, _, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.0, sv="0.9")])
+    ok, t, _, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.0, n=10, sv="0.9")])
     check((ok, t) == (True, "L3+"), "前沿档是旧判分器版本 → 只当缺前沿档，退推定级 L3+")
 
     ok, t, _, d = tier_of([md(CHEAP, 0.0, at="2026-10-01"), md(CHEAP, 1.0, at="2026-10-14")])
@@ -113,7 +120,7 @@ def test_tier_rejects():
     check((ok, t, src) == (True, "L1", "实测"),
           "现行考法与旧考法并存 → 优先现行考法（哪怕旧考法更新）")
 
-    ok, t, src, d = tier_of([md(CHEAP, 0.0), md(FRONT, 0.0, toolset="agent-file-tools")])
+    ok, t, src, d = tier_of([md(CHEAP, 0.0), md(FRONT, 0.0, n=10, toolset="agent-file-tools")])
     check((ok, t, src) == (True, "L4", "推定") and "前沿档" in str(d.get("待补")),
           "前沿档是旧考法 → L4 但降推定")
 
