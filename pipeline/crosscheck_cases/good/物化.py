@@ -28,8 +28,8 @@ TRAPS = {
 
 TASK = {
     "领域": "财务",
-    "任务名": "差旅住宿报销核算(合成)",
-    "task_id": "demo-travel-reimburse-syn-001",
+    "任务名": "差旅住宿报销核算",
+    "task_id": "demo-travel-reimburse-001",
     "子域": "按城市封顶的住宿报销逐行核算（crosscheck 验证 + 程序化物化）",
     "prompt": (
         "你是报销核算岗。input/ 下有《城市住宿标准表》《报销明细》和《核算规则》。"

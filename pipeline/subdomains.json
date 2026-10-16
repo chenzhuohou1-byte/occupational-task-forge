@@ -1,0 +1,1359 @@
+{
+  "_provenance": {
+    "来源": "agents-last-exam-metadata/task_cards.parquet（153 行，153 行有 subdomain_id）",
+    "取数时间": "2026-10-14",
+    "口径": "只用 taxonomy.domain_id/subdomain_id；不用 category——它与 domain_code 有 18 行以上不一致，且这批标签是 gpt-4o-mini 回填的（110/157）",
+    "槽位": "实测 51 个 + 编号空洞 6 个 = 57。官方宣称 55、实测 51，差异显式保留不抹平",
+    "重建": "python3 -m pipeline.subdomains --rebuild <metadata 目录>"
+  },
+  "domains": {
+    "12": {
+      "code": "agriculture_env",
+      "ale_n": 3
+    },
+    "6": {
+      "code": "business_finance",
+      "ale_n": 20
+    },
+    "7": {
+      "code": "legal",
+      "ale_n": 2
+    },
+    "8": {
+      "code": "visual_media",
+      "ale_n": 15
+    },
+    "9": {
+      "code": "computing_math",
+      "ale_n": 24
+    },
+    "14": {
+      "code": "other",
+      "ale_n": 2
+    },
+    "11": {
+      "code": "education_info",
+      "ale_n": 4
+    },
+    "1": {
+      "code": "engineering",
+      "ale_n": 20
+    },
+    "3": {
+      "code": "life_sciences",
+      "ale_n": 23
+    },
+    "13": {
+      "code": "social_sciences",
+      "ale_n": 4
+    },
+    "4": {
+      "code": "health_medicine",
+      "ale_n": 21
+    },
+    "5": {
+      "code": "psychology_neuro",
+      "ale_n": 3
+    },
+    "2": {
+      "code": "physical_sciences",
+      "ale_n": 11
+    },
+    "10": {
+      "code": "transport_safety",
+      "ale_n": 1
+    }
+  },
+  "subdomains": {
+    "1.1": {
+      "domain_id": "1",
+      "code": "aerospace_mech",
+      "name": "Aerospace & Mechanical Engineering",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "PLAXIS/Civil3D/PowerMill/Moldex3D 需授权；可换 FreeCAD/ezdxf/EnergyPlus 等开源替代",
+      "ale_examples": [
+        {
+          "title": "Low-Thrust LEO To GEO Trajectory",
+          "summary": "Compute a three-tier orbital transfer from inclined low Earth orbit to geostationary orbit using analytic, numerical low-thrust, and optimal-control methods."
+        }
+      ]
+    },
+    "1.2": {
+      "domain_id": "1",
+      "code": "electronics",
+      "name": "Electronics Engineering",
+      "ale_n": 3,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Analog Active",
+          "summary": "Design and simulate the required analog circuit in LTspice from the staged specification and deliver the completed schematic output."
+        },
+        {
+          "title": "KiCad Navswitch Library Integration",
+          "summary": "Repair a SparkFun Qwiic Navigation Switch KiCad project by restoring the local symbol and footprint integration for U4 and producing release artifacts."
+        },
+        {
+          "title": "Mini Encabulator KiCad PCB Layout",
+          "summary": "Create a routed KiCad PCB layout from the staged Mini Encabulator schematic."
+        }
+      ]
+    },
+    "1.3": {
+      "domain_id": "1",
+      "code": "civil_geo",
+      "name": "Civil, Architectural & Geospatial Engineering",
+      "ale_n": 4,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "同 1.1，授权软件为主；地理部分可用 Natural Earth/USGS",
+      "ale_examples": [
+        {
+          "title": "Bridge The Gap — Bridge + Site 3D Model",
+          "summary": "Extend an existing 3D site model by adding a bridge designed from the supplied posters, preserving the terrain and surrounding buildings, and export model.obj plus model.3dm."
+        },
+        {
+          "title": "Betonwerk Katzenberger 3D Model",
+          "summary": "Build the Betonwerk Katzenberger workshop Hall and residential Tower in Rhino 8 from the supplied drawings, snapshot, and positioning anchor; export model.obj plus model.3dm."
+        },
+        {
+          "title": "Cailian Road Highway Alignment",
+          "summary": "Use AutoCAD Civil 3D 2024 to design a Cailian Road horizontal alignment, generate an existing-ground surface profile, and export station-sampled alignment metrics."
+        },
+        {
+          "title": "Inner Support Elevation Optimization",
+          "summary": "Use PLAXIS 3D to compare five inner support elevations for a staged pit-in-pit excavation and report settlement and lateral displacement outcomes with the required engineering deliverables."
+        }
+      ]
+    },
+    "1.4": {
+      "domain_id": "1",
+      "code": null,
+      "name": null,
+      "ale_n": 0,
+      "enabled": false,
+      "blocked_by": "ALE未公开",
+      "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
+      "ale_examples": []
+    },
+    "1.5": {
+      "domain_id": "1",
+      "code": "manufacturing",
+      "name": "Manufacturing & Industrial Systems",
+      "ale_n": 3,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "同 1.1，授权软件为主",
+      "ale_examples": [
+        {
+          "title": "gcode",
+          "summary": "Create machining toolpaths for the staged workpiece in PowerMill and deliver the required NC output."
+        },
+        {
+          "title": "mold-flow",
+          "summary": "Configure process parameters in Moldex3D, run the staged mold-flow analysis, and save the required outputs."
+        },
+        {
+          "title": "Sanding Performance Image Scoring",
+          "summary": "Compute pixel-level paint-removal scores from reference and sanded panel images, then write a structured CSV with quantity, uniformity, and composite metrics."
+        }
+      ]
+    },
+    "1.6": {
+      "domain_id": "1",
+      "code": "energy_power",
+      "name": "Energy, Power & Nuclear Engineering",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "EnergyPlus/FDS 开源可用；部分工具需授权",
+      "ale_examples": [
+        {
+          "title": "MPC Control In Building",
+          "summary": "Develop and evaluate baseline, energy-saving MPC, and demand-response MPC cooling control for a single-family EnergyPlus house model."
+        },
+        {
+          "title": "10kV Feeder Reliability Indices",
+          "summary": "Compute IEEE/IEC supply reliability indices for a 10kV distribution feeder from staged CIM/RDF XML, SVG topology, and parameter data, then write the structured JSON result to the canonical output path."
+        }
+      ]
+    },
+    "1.7": {
+      "domain_id": "1",
+      "code": null,
+      "name": null,
+      "ale_n": 0,
+      "enabled": false,
+      "blocked_by": "ALE未公开",
+      "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
+      "ale_examples": []
+    },
+    "1.8": {
+      "domain_id": "1",
+      "code": "semiconductor",
+      "name": "Semiconductor & Microelectronics Design",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Chisel-to-Verilog Source Location Alignment",
+          "summary": "Given a Chisel hardware design (Fifo.scala) and its firtool-optimized SystemVerilog output, identify the exact set of Chisel source locations that a specific sub-expression semantically corresponds to."
+        },
+        {
+          "title": "OpenROAD SKY130 Ibex PnR Signoff",
+          "summary": "Tune the lowRISC Ibex SKY130HD OpenROAD-flow-scripts configuration, rerun the pinned Docker flow, and submit the final config plus pass-audit evidence needed for signoff review."
+        }
+      ]
+    },
+    "1.9": {
+      "domain_id": "1",
+      "code": null,
+      "name": null,
+      "ale_n": 0,
+      "enabled": false,
+      "blocked_by": "ALE未公开",
+      "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
+      "ale_examples": []
+    },
+    "1.10": {
+      "domain_id": "1",
+      "code": "urban_planning",
+      "name": "Urban & Spatial Planning",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "SUMO Urban AM Peak Calibration",
+          "summary": "Repair and calibrate a submitted SUMO 1.26 AM-peak microsimulation package for a synthetic downtown network, then export the required submission tree and calibration report."
+        },
+        {
+          "title": "Hangzhou Metro Passenger Simulation",
+          "summary": "Simulate one operating day of Hangzhou metro passenger trips from staged AFC demand, GIS, and network configuration inputs."
+        }
+      ]
+    },
+    "1.11": {
+      "domain_id": "1",
+      "code": "robotics",
+      "name": "Robotics & Autonomous Systems",
+      "ale_n": 3,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "MuJoCo 开源可用；Isaac 较重",
+      "ale_examples": [
+        {
+          "title": "ABB IRB6700 Asset To URDF",
+          "summary": "Reconstruct a complete ABB IRB6700 robot URDF from staged mesh assets and structural metadata. The agent must preserve the required links, joints, limits, mimic behavior, and auxiliary frames while producing exactly one "
+        },
+        {
+          "title": "Humanoid Velocity Tracking Policy",
+          "summary": "Produce a deterministic Isaac Lab humanoid locomotion policy that tracks commanded planar velocities and satisfies fixed API, stability, and rollout metric gates."
+        },
+        {
+          "title": "",
+          "summary": "Run mjlab whole-body-control rollouts for 8 Unitree G1 humanoid policy cases, classify each as successful/nearly_successful/failed, and emit a schema-conformant `policy_evaluation_report.json` with per-case visual demo a"
+        }
+      ]
+    },
+    "2.1": {
+      "domain_id": "2",
+      "code": "physics",
+      "name": "Physics",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "多数 pip 可装；DFT 类计算重",
+      "ale_examples": [
+        {
+          "title": "Exact Diagonalization of the J1-J2 Heisenberg Model",
+          "summary": "Implement an exact-diagonalization workflow for a frustrated 4x4 spin-1/2 J1-J2 Heisenberg antiferromagnet and produce ground-state, correlation, and dynamical-structure-factor outputs."
+        },
+        {
+          "title": "2D Hexagonal Lattice Phonon Dispersion And Thermodynamics",
+          "summary": "Construct the dynamical matrix for a two-atom 2D hexagonal lattice, then compute the staged 1D validation, high-symmetry phonon dispersion, phonon DOS, and thermodynamic observables."
+        }
+      ]
+    },
+    "2.2": {
+      "domain_id": "2",
+      "code": "chemistry_materials",
+      "name": "Chemistry & Materials Computation",
+      "ale_n": 7,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "RDKit 可 pip；QE/BerkeleyGW 重，必要时降级",
+      "ale_examples": [
+        {
+          "title": "Silicon GW Band Gap",
+          "summary": "Compute the indirect GW quasiparticle band gap of bulk silicon using Quantum ESPRESSO and BerkeleyGW."
+        },
+        {
+          "title": "Egt710 Table1 SMILES Extraction",
+          "summary": "Extract Table 1 from the staged paper, reconstruct the nine compounds, and deliver a CSV with validated SMILES and reported assay values."
+        },
+        {
+          "title": "Ketcher SMILES Reproduction",
+          "summary": "Recreate the target molecule in Ketcher from a staged structure image and export the result as a SMILES file."
+        },
+        {
+          "title": "Molecular Structure Plausibility",
+          "summary": "Inspect a set of molecular XYZ files and identify the structures that are physically implausible under basic chemistry and geometry constraints."
+        },
+        {
+          "title": "Mose2 Bse Absorption Soc",
+          "summary": "Your Task Compute the SOC enabled GW BSE optical response of monolayer MoSe2 from the staged structure and pseudopotentials."
+        },
+        {
+          "title": "QM9 MMFF94 Force-Field Failure Survey",
+          "summary": "Survey the QM9 quantum chemistry dataset to characterize systematic failures of the MMFF94 molecular mechanics force field relative to B3LYP/6-31G(2df,p) reference geometries, across a five-phase computational pipeline."
+        },
+        {
+          "title": "Silicon Bse Absorption",
+          "summary": "Your Task Compute the GW BSE absorption spectrum of bulk silicon from the staged structure and pseudopotential."
+        }
+      ]
+    },
+    "2.3": {
+      "domain_id": "2",
+      "code": "astronomy",
+      "name": "Astronomy & Astrophysics",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "Astropy 可 pip；MAST/Vizier 可达性待再探",
+      "ale_examples": [
+        {
+          "title": "HST ACS/WFC Visit Reduction",
+          "summary": "Implement a reproducible Python reduction workflow for synthetic HST ACS/WFC imaging visits, including masking, alignment, drizzling, source photometry, astrometry, and QC reporting."
+        }
+      ]
+    },
+    "2.4": {
+      "domain_id": "2",
+      "code": "earth_atmo",
+      "name": "Earth & Atmospheric Sciences",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "CMIP6 Climate Emulation Pipeline",
+          "summary": "Build an end-to-end climate-emulation pipeline from a staged CMIP6-derived Zarr store and predict the held-out SSP245 test window for temperature and precipitation fields."
+        }
+      ]
+    },
+    "3.1": {
+      "domain_id": "3",
+      "code": "biomolecular",
+      "name": "Biomolecular Structure & Design",
+      "ale_n": 5,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "RDKit/Biopython 可 pip；Amber+CUDA+SLURM 类需 GPU，避开",
+      "ale_examples": [
+        {
+          "title": "Amber Implicit-Solvent Minimization Workflow Construction",
+          "summary": "Construct three Linux Amber workflow files from a cleaned protein-complex structure: a tleap build file, an implicit-solvent minimization control file, and a SLURM submission script."
+        },
+        {
+          "title": "Amber Three-Stage MMGBSA Workflow Authoring",
+          "summary": "Author a Linux Amber workflow bundle for a three-chain protein complex, including the two SLURM driver scripts, the MMGBSA submission script, and the final MMGBSA result file based on a staged trajectory."
+        },
+        {
+          "title": "IDP Ensemble Scoring with Given Open-Source Tools",
+          "summary": "Rank 5 IDP ensemble generation models by how well their ensembles match experimental NMR data (chemical shifts, J-couplings, NOE/PRE) using UCBShift and X-EISD."
+        },
+        {
+          "title": "ZDOCK HIV Dimer Interface Scoring",
+          "summary": "Evaluate ten precomputed HIV protease dimer docking poses by computing fixed interface overlap, Fnat, IRMSD, and final ranking metrics."
+        },
+        {
+          "title": "Lenacapavir SAR Table2 Extraction",
+          "summary": "Extract every compound row from Table 2 of the staged manuscript, reconstruct the full molecules, and deliver a CSV with SMILES and potency values."
+        }
+      ]
+    },
+    "3.2": {
+      "domain_id": "3",
+      "code": "genomics",
+      "name": "Genomics & Sequence Analysis",
+      "ale_n": 10,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Clinical Variant Annotation",
+          "summary": "Analyze a staged clinical VCF, identify the pathogenic BRCA1-like candidate, and document the supporting evidence in the required output tables."
+        },
+        {
+          "title": "Build A Pinned Clinical Variant Annotation Table",
+          "summary": "Parse a staged 50-variant NA12878-derived VEP snapshot bundle, recover gene / consequence / frequency / ClinVar annotations, and emit the exact reportable subset."
+        },
+        {
+          "title": "WGS Variant Calling",
+          "summary": "Run a germline variant-calling workflow on real HG002 reads from a 1 Mb GRCh38 chromosome 17 region and produce a filtered VCF for evaluator-side benchmarking."
+        },
+        {
+          "title": "BRCA Differential Expression And KEGG Enrichment Analysis",
+          "summary": "Analyze a staged BRCA count matrix and metadata on Ubuntu, run pydeseq2 differential expression for tumor versus normal, and generate paired KEGG enrichment outputs."
+        },
+        {
+          "title": "ENCODE CTCF Union Peak Intervals",
+          "summary": "Process three ENCODE CTCF narrowPeak BED files into the requested non-overlapping union peak set, with a reproducible command log and summary counts."
+        },
+        {
+          "title": "HG002 Chr22 Germline Variant Pipeline",
+          "summary": "Repair a staged chr22 germline variant-calling workflow for HG002 and produce the required filtered variants, annotation outputs, and QC artifacts."
+        },
+        {
+          "title": "Protein Function Annotation With InterProScan",
+          "summary": "Annotate one staged yeast protein with InterProScan, export the required InterPro and GO TSV files, and write a short gamma-tubulin functional summary."
+        },
+        {
+          "title": "Pseudotime Differential Expression (Palantir + tradeSeq)",
+          "summary": "Discover genes with different expression patterns along pseudotime in a bone-marrow scRNA-seq dataset using Palantir for pseudotime estimation and tradeSeq for lineage-specific differential expression testing."
+        },
+        {
+          "title": "TCGA BRCA Differential Expression Analysis",
+          "summary": "Analyze TCGA Breast Cancer expression and clinical matrices to identify genes differentially expressed between primary tumor and solid tissue normal samples."
+        },
+        {
+          "title": "K562 Genome Browser SVG Export",
+          "summary": "Create an hg19 genome-browser SVG for a K562 regulatory locus using a structural-variant VCF and an H3K27ac BigWig signal track."
+        }
+      ]
+    },
+    "3.3": {
+      "domain_id": "3",
+      "code": "cell_imaging",
+      "name": "Cell & Imaging Biology",
+      "ale_n": 6,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Cell Tracking Instance 1",
+          "summary": "Segment and track cells across a 30-frame fluorescence microscopy sequence and export Cell Tracking Challenge style masks and lineage metadata."
+        },
+        {
+          "title": "Cell Translocation Analysis",
+          "summary": "Analyze paired DNA and GFP microscopy images to quantify nuclear translocation across a drug dose series and report the minimum effective dose."
+        },
+        {
+          "title": "Single-FOV MERFISH Image Decoding And Cell Segmentation",
+          "summary": "Run the full MERFISH image-analysis pipeline on one field of view of U2OS cells: decode transcripts against a 130-gene MHD4 codebook, segment nuclei from the DAPI tile, assign transcripts to cells, and emit a cell-by-gen"
+        },
+        {
+          "title": "Spatial Transcriptomics Spatial Domain Identification",
+          "summary": "Cluster 12 human DLPFC 10x Visium slices into spatial domains and submit per-spot labels, summary metrics, manifest metadata, and one UMAP overlay."
+        },
+        {
+          "title": "Marrow Cell Type Annotation",
+          "summary": "Annotate every cell in a staged Smart-seq2 mouse bone marrow AnnData object using a fixed 21-label ontology and return one predicted label per cell."
+        },
+        {
+          "title": "Yeast Colony Detection",
+          "summary": "Detect red yeast colonies in a masked agar-plate image and export a colony count plus centroid measurement table."
+        }
+      ]
+    },
+    "3.4": {
+      "domain_id": "3",
+      "code": "systems_microbial",
+      "name": "Systems & Microbial Biology",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "RGI Contig Resistance Annotation",
+          "summary": "Annotate one staged antimicrobial-resistance contig with CARD RGI and report the best-hit ARO gene name, percent identity, drug class, and resistance mechanism in a JSON output."
+        },
+        {
+          "title": "Gillespie SSA For A Tristable Gene Regulatory Network",
+          "summary": "Implement exact Gillespie stochastic simulation and tau-leaping in NumPy for a three-gene mutual-inhibition chemical kinetics model, then report validation, multistability, bifurcation, and acceleration results."
+        }
+      ]
+    },
+    "4.1": {
+      "domain_id": "4",
+      "code": "clinical_diagnostics",
+      "name": "Clinical Diagnostics & Imaging",
+      "ale_n": 5,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "大医学影像数据集多为门控（TCIA/NIH 部分），先用可达小样本",
+      "ale_examples": [
+        {
+          "title": "CT Geometry Calibration (Catphan Phantom)",
+          "summary": "Calibrate CT geometry parameters (SAD, SDD, detector offset) for a Catphan phantom scan by iteratively optimizing a LEAP-based FBP reconstruction to match a reference image."
+        },
+        {
+          "title": "Limited-Angle CT Reconstruction With DPS",
+          "summary": "Reconstruct a 512x512 fan-beam CT attenuation image from a 90-degree limited-angle sinogram using Diffusion Posterior Sampling or a compatible diffusion-prior reconstruction method."
+        },
+        {
+          "title": "MicroDicom NIH CXR Reader Adjudication",
+          "summary": "Adjudicate between two competing reader annotations for a 9-case chest X-ray cohort in a Windows MicroDicom workflow, then save three cohort TSV outputs (adjudicated boxes, adjudication log, final impressions)."
+        },
+        {
+          "title": "NSCLC Radiomics Cox Signature",
+          "summary": "Build a CPU-only radiomics survival-risk model for non-small-cell lung cancer from CT volumes, tumor masks, training clinical outcomes, and fixed held-out prediction IDs."
+        },
+        {
+          "title": "Whole-Slide Tumor Localization",
+          "summary": "Navigate a CAMELYON16 whole-slide pathology image with provided OpenSlide helper tools and output a structured tumor localization result."
+        }
+      ]
+    },
+    "4.2": {
+      "domain_id": "4",
+      "code": "therapeutic_oncology",
+      "name": "Therapeutic & Oncology Services",
+      "ale_n": 4,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "同 4.1，门控数据",
+      "ale_examples": [
+        {
+          "title": "ECG Rhythm Conduction Ptbxl",
+          "summary": "Variant ptbxl 2263: Single PTB XL derived rhythm/conduction benchmark slice with 2,263 anonymized ECG records."
+        },
+        {
+          "title": "ECG Superclass Ptbxl",
+          "summary": "Variant ptbxl 1386: Single PTB XL derived diagnostic superclass benchmark slice with 1,386 anonymized ECG records."
+        },
+        {
+          "title": "Prostate IMRT matRad Reproduction",
+          "summary": "Act as a senior medical physicist: reproduce a fixed-field prostate IMRT reference plan with matRad + GNU Octave on Linux, repair three planted RTSTRUCT defects, optimize fluence + Engel leaf sequencing, export a consist"
+        },
+        {
+          "title": "SimGlucose Safe Basal Control",
+          "summary": "Implement a meal-unannounced, basal-only glucose controller for SimGlucose that satisfies safety gates across hidden patient episodes."
+        }
+      ]
+    },
+    "4.3": {
+      "domain_id": "4",
+      "code": "clinical_informatics",
+      "name": "Clinical Informatics & Care Operations",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Public Synthetic Healthcare Bias Audit Replication",
+          "summary": "Reproduce the public synthetic Obermeyer fairness-audit workflow with the staged bundle and the preprovisioned `software/task_python` and `software/task_rscript` runtimes, then deliver the required audit CSVs, structured"
+        },
+        {
+          "title": "Sepsis-Associated AKI Phenotyping",
+          "summary": "Read staged synthetic MIMIC-IV style tables and identify the ICU patients who satisfy Sepsis-3 plus KDIGO SA-AKI timing criteria."
+        }
+      ]
+    },
+    "4.4": {
+      "domain_id": "4",
+      "code": "public_health",
+      "name": "Public Health & Epidemiology",
+      "ale_n": 7,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Epidemiology Forecast",
+          "summary": "Reproduce the 2021-22 CDC FluSight influenza-hospitalization end-of-season scorecard and per-cell scoring table from staged forecast and truth data."
+        },
+        {
+          "title": "FluSight Offline Hospital Forecast",
+          "summary": "Produce a FluSight-style weekly influenza hospitalization forecast from an archived public snapshot as of 2024-12-14 and write the required submission CSV."
+        },
+        {
+          "title": "TCGA LUAD KRAS Survival Analysis",
+          "summary": "Download public TCGA-LUAD data from GDC, build a KRAS-stratified survival cohort, and export Kaplan-Meier and Cox proportional hazards results."
+        },
+        {
+          "title": "NHANES Confounder Sensitivity Analysis",
+          "summary": "Rebuild a clinical sensitivity-analysis cohort from staged NHANES tables and produce the required participant subset plus logistic-regression summary outputs."
+        },
+        {
+          "title": "",
+          "summary": "Audit an Obermeyer-style healthcare risk-score bias using `risk_score_t` as the baseline, build a counterfactual revised ranking from medical need, and emit `full_predictions.csv` plus baseline and revised analysis repor"
+        },
+        {
+          "title": "Mask Mandate Moment-In-Time Ratio",
+          "summary": "Estimate the causal moment-in-time effect of a county-level mask mandate from a staged matched-pair county panel and produce the required six-value results JSON."
+        },
+        {
+          "title": "Continuous Treatment Shift Simulation Replication",
+          "summary": "Reproduce a causal-inference Monte Carlo simulation study comparing IPTW, A-IPTW, and TMLE under a continuous-treatment shift intervention."
+        }
+      ]
+    },
+    "4.5": {
+      "domain_id": "4",
+      "code": "clinical_trials",
+      "name": "Clinical Research & Trial Operations",
+      "ale_n": 3,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "同 4.1，门控数据",
+      "ale_examples": [
+        {
+          "title": "CRF To SDTM Mapping Specification",
+          "summary": "Create a field-level mapping CSV from clinical CRF and define.xml source documents to SDTM domain variables. The task has CM, VS, and DS variants with matching supplemental qualifier datasets."
+        },
+        {
+          "title": "CRF To SDTM Mapping Specification 4",
+          "summary": "Create field-level mapping CSVs from clinical CRF and define.xml source documents to SDTM AE/SUPPAE or DM/SUPPDM variables."
+        },
+        {
+          "title": "NSCLC Group-Sequential SAP",
+          "summary": "Produce a statistical analysis plan package for a Phase III NSCLC trial with log-rank sample size, O'Brien-Fleming interim boundaries, futility, Hochberg secondary testing, and plots."
+        }
+      ]
+    },
+    "5.1": {
+      "domain_id": "5",
+      "code": "comp_neuro",
+      "name": "Computational Neuroscience",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "C. elegans Neuron Tracking",
+          "summary": "Complete sparse whole-brain neuron trajectories in a staged HDF5 recording by preserving neuron identity across time and writing the finished track file for one of four variants."
+        }
+      ]
+    },
+    "5.2": {
+      "domain_id": "5",
+      "code": "exp_psychology",
+      "name": "Experimental Psychology & Neuroimaging",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Scene3 Skullstrip QC",
+          "summary": "Review skull-stripping results for the staged brain MRI case and record the required QC decision."
+        },
+        {
+          "title": "Scene2 Resample",
+          "summary": "Resample a 1 mm ROI mask onto the 2 mm statistical-map grid and save the required aligned output."
+        }
+      ]
+    },
+    "6.1": {
+      "domain_id": "6",
+      "code": "accounting",
+      "name": "Accounting & Finance",
+      "ale_n": 6,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "SEC（sec.gov）本机被挡，换 data.gov / Kaggle 取数",
+      "ale_examples": [
+        {
+          "title": "Annual Report Full Extraction (1500 files)",
+          "summary": "Download 1500 annual reports from East Money, extract core technical personnel records, and produce one consolidated workbook with the required schema."
+        },
+        {
+          "title": "Annual Report Full Extraction (300 files)",
+          "summary": "Download 300 annual reports from East Money, extract core technical personnel records, and produce one consolidated workbook with the required schema."
+        },
+        {
+          "title": "Apple FY2024 Balance Sheet Reconstruction",
+          "summary": "Extract Apple Inc.'s FY2024 Consolidated Balance Sheet from its Form 10-K and return a structured JSON report with exact USD-million values."
+        },
+        {
+          "title": "PE Screening Memo 1",
+          "summary": "Review a staged Zscaler diligence packet and write a structured private-equity screening memo with an explicit investment recommendation."
+        },
+        {
+          "title": "SEC 10-K Financial Parsing",
+          "summary": "Parse a fixed 100-filing SEC 10-K corpus into normalized financial JSON outputs, preserve the raw text evidence used for extraction, answer three cross-filing analytical questions, and rerun a fixed validation subset det"
+        },
+        {
+          "title": "Taxform 4 1",
+          "summary": "Prepare a U.S. tax return from staged wage documents and instructions, then save the required JSON outputs."
+        }
+      ]
+    },
+    "6.2": {
+      "domain_id": "6",
+      "code": "actuarial_risk",
+      "name": "Actuarial & Risk Modeling",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Basel Operational Risk BIA Classification",
+          "summary": "Classify Chinese operational-risk loss events into Basel event categories and business lines, then calculate regulatory capital under the Basic Indicator Approach."
+        }
+      ]
+    },
+    "6.3": {
+      "domain_id": "6",
+      "code": "enterprise_analytics",
+      "name": "Enterprise Analytics & Planning",
+      "ale_n": 5,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Flowable BPMN Category Governance Restructuring L3",
+          "summary": "Redesign Z Global's Maternal & Baby category governance workflow in Flowable BPMN 6.5.0 for a compound organizational disruption, then produce the required BPMN, compliance, scenario-result, and design-decision artifacts"
+        },
+        {
+          "title": "Flowable BPMN Supply Disruption L3",
+          "summary": "Redesign LY Juice Company's monthly production scheduling workflow in Flowable BPMN 6.5.0 so it handles a compound supply-shortage and quality-hold disruption, then produce the required BPMN and compliance output bundle."
+        },
+        {
+          "title": "Equity Research Summary",
+          "summary": "Build a company equity-research workbook from staged filings and market sources, then produce the required summary outputs."
+        },
+        {
+          "title": "FF5 Public Reconstruction",
+          "summary": "Reconstruct the monthly Fama-French five-factor series for exactly 2015-01 through 2026-02 using only the staged allowlisted public sources, then save the required factor CSV."
+        },
+        {
+          "title": "Metabase BI Dashboard",
+          "summary": "Build a business analytics dashboard in Metabase using a pre-loaded SQLite database, then export key metrics as a structured JSON report."
+        }
+      ]
+    },
+    "6.4": {
+      "domain_id": "6",
+      "code": "compliance",
+      "name": "Compliance & Regulatory",
+      "ale_n": 3,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "SEC 被挡，同 6.1",
+      "ale_examples": [
+        {
+          "title": "GPT Actions Privacy & Policy Audit",
+          "summary": "Audit 2,253 real GPT Actions against OpenAI's published GPT Actions Usage Policy and compute cross-domain data-exposure amplification across shared backend domains on a Linux VM."
+        },
+        {
+          "title": "SSE Northbound Programmatic Trading Research",
+          "summary": "Answer three closed-book Shanghai Stock Exchange reporting questions from staged Chinese source documents and return a structured JSON memo with Chinese citations and evidence."
+        },
+        {
+          "title": "AGORA AI Governance Document Classification",
+          "summary": "Classify three cached AI governance documents across legislative status, technical scope, and AI lifecycle stages with verbatim evidence and a gap analysis."
+        }
+      ]
+    },
+    "6.5": {
+      "domain_id": "6",
+      "code": "hr_pm",
+      "name": "HR & Project Management",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Internal Employee Agent Conversation Replay",
+          "summary": "Read staged HR and IT support conversations, then produce one deterministic `results.json` that captures the correct per-turn responses and tool usage across all sessions."
+        }
+      ]
+    },
+    "6.6": {
+      "domain_id": "6",
+      "code": "sales_marketing",
+      "name": "Sales & Marketing",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Digital Marketing A/B Test Analysis",
+          "summary": "Design and analyze a marketing A/B test with exclusion handling, stratified assignment checks, two-proportion inference, BH correction, and a final ship/hold recommendation."
+        },
+        {
+          "title": "Digital Marketing Audience Segmentation",
+          "summary": "Segment customer profiles into a high-transaction email-disengaged cohort for re-engagement via SMS and push, applying governance rules and overlap analysis."
+        }
+      ]
+    },
+    "6.7": {
+      "domain_id": "6",
+      "code": "quant_finance",
+      "name": "Quantitative Finance & Trading",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "American Option Pricing via Longstaff-Schwartz",
+          "summary": "Implement a three-tier Monte Carlo option-pricing benchmark covering Black-Scholes validation, a single-asset American put solved with Longstaff-Schwartz regression, and a correlated 5-asset basket American put with path"
+        }
+      ]
+    },
+    "6.8": {
+      "domain_id": "6",
+      "code": "supply_chain",
+      "name": "Supply Chain & Logistics",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Odoo Supply-Chain End-To-End Workflow",
+          "summary": "Execute a full Odoo ERP supply-chain workflow — purchases, landed cost, subcontracting, two-level manufacturing, delivery, invoicing, and a returns / credit-note flow — and leave the final business state inside the varia"
+        }
+      ]
+    },
+    "7.1": {
+      "domain_id": "7",
+      "code": "litigation",
+      "name": "Litigation Support & Discovery",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "M&A Filing Consistency Audit",
+          "summary": "Review four Chinese regulatory filings about the same share-transfer transaction and write an English audit report that identifies supported inconsistencies with Chinese evidence and location markers."
+        }
+      ]
+    },
+    "7.2": {
+      "domain_id": "7",
+      "code": "legal_research",
+      "name": "Doctrinal Legal Research",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "BAC Arbitration Fee Calculation",
+          "summary": "Calculate Beijing Arbitration Commission institution fees, arbitrator remuneration, and total fees for five arbitration cases using staged Chinese PDF fee schedules."
+        }
+      ]
+    },
+    "8.1": {
+      "domain_id": "8",
+      "code": "animation_3d",
+      "name": "3D, Animation & Interactive Media",
+      "ale_n": 10,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "Blender 开源、arm64 原生可跑；ALE 原题里的 After Effects 部分需授权，避开",
+      "ale_examples": [
+        {
+          "title": "Blender Tabletop Workspace Reconstruction",
+          "summary": "Reconstruct a tabletop robotic-manipulation workspace in Blender from a floor plan, a reference render, and staged mesh assets, then save the scene, render a verification image, and export the required OBJ files."
+        },
+        {
+          "title": "Game Port Reference Capture: Magic Tower",
+          "summary": "Stand-in for the asset-capture step of a Flash-to-modern-engine port: drive the legacy Magic Tower (mota-24) build under Ruffle and collect per-floor reference screenshots that downstream engineers will use as ground-tru"
+        },
+        {
+          "title": "Atlas Outpost Graybox Navigation",
+          "summary": "Finish a Windows GPU Blender/Godot graybox level blockout so the exported Atlas Outpost layout supports the required visible navigation routes and review constraints."
+        },
+        {
+          "title": "Blender Character Reconstruction From Multiview",
+          "summary": "Reconstruct a stylized full-body character in Blender from five fixed clay reference views plus scale/orientation metadata, then save the scene and export the required deliverables under the exact submission layout."
+        },
+        {
+          "title": "butterfly_flap_animation",
+          "summary": "Animate a supplied butterfly image in Adobe After Effects with four wing-flap cycles and a smooth curved 2.5D flight path."
+        },
+        {
+          "title": "chroma_key_from_reference",
+          "summary": "Isolate the correct foreground subject from an existing scene and rebuild it as a green-screen plate in DaVinci Resolve."
+        },
+        {
+          "title": "Compress A 3D Gaussian Splatting Scene",
+          "summary": "Compress a pretrained 3D Gaussian Splatting scene while preserving rendering quality on hidden LLFF holdout views, then report the resulting quality metrics and compression ratio."
+        },
+        {
+          "title": "Human Mesh Animation Reproduction",
+          "summary": "Rig and animate a provided human mesh in Blender so its exported per-frame OBJ sequence matches the motion in a reference video."
+        },
+        {
+          "title": "Skeletal Animation Reproduction",
+          "summary": "Rig and animate the staged character in Blender so it reproduces the target body motion from the reference video."
+        },
+        {
+          "title": "UV Reproduction",
+          "summary": "Recreate the required UV layout and material appearance of the staged 3D asset in Blender."
+        }
+      ]
+    },
+    "8.2": {
+      "domain_id": "8",
+      "code": "graphic_design",
+      "name": "Graphic, Visual & Product Design",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "SaaS One-Pager Brand Refresh",
+          "summary": "Rebuild a flattened SaaS one-pager as an editable single-slide PowerPoint on Windows, apply the staged NorthstarOS rebrand changes, and export both a PPTX and a PNG."
+        },
+        {
+          "title": "Inkscape Cultural Poster Design",
+          "summary": "Create a single-page cultural exhibition poster in Inkscape on Windows using a staged design brief, a source photo, and a structured instance specification, then save the final poster as an SVG."
+        }
+      ]
+    },
+    "8.3": {
+      "domain_id": "8",
+      "code": null,
+      "name": null,
+      "ale_n": 0,
+      "enabled": false,
+      "blocked_by": "ALE未公开",
+      "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
+      "ale_examples": []
+    },
+    "8.4": {
+      "domain_id": "8",
+      "code": "audio_music",
+      "name": "Audio, Music & Post-Production Media",
+      "ale_n": 3,
+      "enabled": false,
+      "blocked_by": "授权软件",
+      "blocked_note": "ALE 原题用 Cubase/Dorico（需授权）；音频文件可自造，待评估后再开",
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Music Transcription",
+          "summary": "Listen to a recorded orchestral piece and transcribe it into a professional music score, exporting PDF, MIDI with correct instrument program assignments, and a screenshot of the notation software."
+        },
+        {
+          "title": "Cubase Project Migration",
+          "summary": "Repair a Cubase project that opens with missing plugins by substituting equivalent installed VSTs, then save the migrated session, export stems, and capture a verification screenshot."
+        },
+        {
+          "title": "Pre-Restoration Shot Log: Vintage Animation Remaster",
+          "summary": "Produce a temporal per-shot continuity log (DOCX) for a public-domain 1931 Yasuji Murata animation as the archival-documentation pass that precedes a restoration / remaster pipeline. The log must preserve the factual vis"
+        }
+      ]
+    },
+    "9.1": {
+      "domain_id": "9",
+      "code": "software_eng",
+      "name": "Software Engineering",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Competitive Programming Test Generator — Binary String Copying",
+          "summary": "Write gen.cpp, a C++ test case generator for the Binary String Copying problem that produces adversarial inputs to distinguish correct from incorrect solutions among 10 hidden submissions."
+        },
+        {
+          "title": "Ranking Node Feature Parity Recovery",
+          "summary": "Recover a ranking-service node by rebuilding the feature manifest, deleting only safe rollback debris, and preserving required serving shards."
+        }
+      ]
+    },
+    "9.2": {
+      "domain_id": "9",
+      "code": "data_analytics",
+      "name": "Data & Analytics Engineering",
+      "ale_n": 4,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Retail ETL Warehouse Cleanup",
+          "summary": "Build a cleaned SQLite star-schema warehouse plus two truthful JSON sidecars from messy retail CSV, JSON, and TSV source files on a Linux VM."
+        },
+        {
+          "title": "Kubernetes Payment API Root Cause Analysis",
+          "summary": "Analyze static Kubernetes incident artifacts for a flapping payment-api deployment and produce a grounded JSON root-cause report."
+        },
+        {
+          "title": "Hybrid Recommender Cold-Start Benchmark",
+          "summary": "Build a warm-plus-cold hybrid recommender on Linux, using temporal splitting, metadata/embedding cold-start ranking, and a combined output contract."
+        },
+        {
+          "title": "Synthetic Causal Structure Inference",
+          "summary": "Inspect 40 synthetic tabular datasets, infer each dataset's causal scenario and graph structure, and submit one combined JSON benchmark prediction file."
+        }
+      ]
+    },
+    "9.3": {
+      "domain_id": "9",
+      "code": "ai_cs_research",
+      "name": "AI Engineering, Safety & CS Research",
+      "ale_n": 3,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Repair Standalone DiT Pipeline CFG Alignment",
+          "summary": "Repair a buggy standalone DiT sampling pipeline so its classifier-free guidance behavior matches the intended reference implementation while preserving the one-file edit workflow."
+        },
+        {
+          "title": "Checkpoint Consolidation V2",
+          "summary": "Infer the non-standard TP/PP/EP checkpoint layout from staged framework code and shard files, then reconstruct a single HuggingFace-compatible `model.safetensors` artifact."
+        },
+        {
+          "title": "LCA-on-the-Line Table 2 Reproduction",
+          "summary": "Reproduce the 40-cell correlation table (Table 2) from the ICML 2024 paper \"LCA-on-the-Line: Benchmarking Out-of-Distribution Generalization with Class Taxonomies\" (arXiv:2407.16067). The provided codebase ships precompu"
+        }
+      ]
+    },
+    "9.4": {
+      "domain_id": "9",
+      "code": "math_ops_research",
+      "name": "Mathematical & Operations Research",
+      "ale_n": 5,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Branch-and-Bound ATSP Solver",
+          "summary": "Implement a Python branch-and-bound solver for deterministic asymmetric TSP instances and report certified results across three tiers."
+        },
+        {
+          "title": "CFR Game Theory Equilibrium",
+          "summary": "Implement exact and regret-minimization solvers for three zero-sum games and write one combined JSON output."
+        },
+        {
+          "title": "Finite Abelian Extension Classification",
+          "summary": "Solve a staged finite abelian group extension classification problem in GAP and produce the exact canonical JSON answer. The benchmark contains 6 variants with different abelian groups H and search ranges for m."
+        },
+        {
+          "title": "Particle Filter Nonlinear Tracking",
+          "summary": "Implement a three-tier particle-filter benchmark in Python, covering a linear-Gaussian validation case, 2D range-bearing tracking, and a coordinated-turn smoother case with Student-t process noise."
+        },
+        {
+          "title": "Capacitated Vehicle Routing Problems",
+          "summary": "Generate VRPLIB-format near-best-known CVRP solutions for three selected benchmark instances."
+        }
+      ]
+    },
+    "9.5": {
+      "domain_id": "9",
+      "code": "cybersecurity",
+      "name": "Cybersecurity & Digital Forensics",
+      "ale_n": 4,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Ghidra Malware Config Extraction",
+          "summary": "Reverse engineer a packed Windows malware sample in Ghidra and recover the configuration fields requested by the visible JSON schema."
+        },
+        {
+          "title": "Newyear Keygen2",
+          "summary": "Reverse engineer the bundled program, recover the key-generation logic, and write the correct answer for the staged UID."
+        },
+        {
+          "title": "Enterprise PCAP Triage In Wireshark",
+          "summary": "Analyze a staged enterprise packet capture in Wireshark, identify the compromised internal host, reconstruct the infection chain, and deliver a structured triage report."
+        },
+        {
+          "title": "Tris Crackme",
+          "summary": "Analyze the bundled registration crackme and make the program appear successfully registered."
+        }
+      ]
+    },
+    "9.6": {
+      "domain_id": "9",
+      "code": "infra_cloud",
+      "name": "Infrastructure Engineering & Cloud Operations",
+      "ale_n": 3,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "Docker/k8s/Terraform 均开源，但嵌套 Docker 需本地 Docker 环境",
+      "ale_examples": [
+        {
+          "title": "AWS Cost Optimization Analysis",
+          "summary": "Analyze a synthetic AWS billing dashboard screenshot plus usage and pricing tables to identify wasteful resources and produce a structured optimization report with projected monthly savings."
+        },
+        {
+          "title": "Docker Compose To Kubernetes Migration",
+          "summary": "Migrate a 3-tier Docker Compose web app (React, Flask, PostgreSQL) to a production-grade Helm chart on local Minikube, plus matching Terraform and a CI/CD pipeline; deliverables are scored on a weighted Helm/Terraform/CI"
+        },
+        {
+          "title": "OS Log Permission Guard",
+          "summary": "Safely update sandboxed Linux log-file permissions from a filesystem snapshot while preserving protected system-owner, active-writer, and non-log files."
+        }
+      ]
+    },
+    "9.7": {
+      "domain_id": "9",
+      "code": "quantum",
+      "name": "Quantum Computing",
+      "ale_n": 3,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Clustered-Cyclic Code Circuit Simulation",
+          "summary": "Reproduce circuit-level logical failure-rate data for three clustered-cyclic CSS quantum error-correcting codes using the supplied construction notes and simulation grid."
+        },
+        {
+          "title": "Post-Measurement States for a Quantum Ising Chain",
+          "summary": "Compute the post-measurement output bundle for several 1D quantum Ising chain variants, including the critical ground state, measurement probabilities, one-site reduced density matrices, and optional one-body correlators"
+        },
+        {
+          "title": "ADAPT-VQE Molecular Ground-State Energy",
+          "summary": "Use only NumPy and SciPy to solve three visible Jordan-Wigner molecular Hamiltonians with VQE / ADAPT-VQE style logic, then write a structured `results.json` with tier-wise energies and method metadata."
+        }
+      ]
+    },
+    "10.1": {
+      "domain_id": "10",
+      "code": null,
+      "name": null,
+      "ale_n": 0,
+      "enabled": false,
+      "blocked_by": "ALE未公开",
+      "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
+      "ale_examples": []
+    },
+    "10.2": {
+      "domain_id": "10",
+      "code": null,
+      "name": null,
+      "ale_n": 0,
+      "enabled": false,
+      "blocked_by": "ALE未公开",
+      "blocked_note": "上游 subdomain_id 编号空洞，名称只存在于未公开的 1490 条任务里",
+      "source_note": null,
+      "ale_examples": []
+    },
+    "10.3": {
+      "domain_id": "10",
+      "code": "fire_safety",
+      "name": "Fire Science & Public Safety",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "FDS Single-Compartment Detector Reconstruction",
+          "summary": "Complete a Linux Python CLI that reconstructs a synthetic single-compartment FDS/Smokeview detector-response case from visible fire-safety engineering inputs."
+        }
+      ]
+    },
+    "11.1": {
+      "domain_id": "11",
+      "code": "edtech",
+      "name": "Educational Technology",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Homework Grading Numerical PDEs 02",
+          "summary": "Grade five synthetic graduate numerical-PDE homework submissions from released materials, then emit scores, error tags, per-student feedback, a class summary, and a grader manifest."
+        },
+        {
+          "title": "Moodle Gradebook Closeout Reconciliation",
+          "summary": "Repair a broken offline Moodle-style course backup and rebuild the registrar plus OneRoster closeout exports from the repaired bundle."
+        }
+      ]
+    },
+    "11.2": {
+      "domain_id": "11",
+      "code": "library_info",
+      "name": "Library & Information Science",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "MARC Remediation FOLIO Overlay",
+          "summary": "Complete a Python starter project that remediates legacy MARC batches, applies cataloging policy rules, and prepares deterministic FOLIO Data Import overlay artifacts."
+        }
+      ]
+    },
+    "11.3": {
+      "domain_id": "11",
+      "code": "translation",
+      "name": "Translation & Localization",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Yi Manuscript Translation 1",
+          "summary": "Inspect a classical Yi manuscript image, identify which glyph a phonetic gloss refers to, localize that glyph, and write a cited translation report from bundled source texts."
+        }
+      ]
+    },
+    "12.1": {
+      "domain_id": "12",
+      "code": "env_water",
+      "name": "Environmental Modeling, Engineering & Water Resources",
+      "ale_n": 1,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "GLM Lake Calibration",
+          "summary": "Calibrate a staged GLM 3 Lake Mendota model by editing one namelist file so the simulated vertical temperature profiles match the staged field observations."
+        }
+      ]
+    },
+    "12.2": {
+      "domain_id": "12",
+      "code": "precision_ag",
+      "name": "Precision Agriculture",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Crop Rotation Audit for Stable Parcels",
+          "summary": "Audit French stable agricultural parcels for crop-rotation eligibility and risk, then produce full eligible and flagged GeoPackage outputs with exact schema and layer requirements."
+        },
+        {
+          "title": "Sentinel-2 NDVI Zonal Statistics",
+          "summary": "Compute a Sentinel-2 NDVI GeoTIFF and polygon-level NDVI zonal statistics for agricultural units with a CRS mismatch between vector and raster inputs."
+        }
+      ]
+    },
+    "13.1": {
+      "domain_id": "13",
+      "code": "economics",
+      "name": "Economics & Quantitative Social Research",
+      "ale_n": 4,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "IHDP ITE Estimation",
+          "summary": "Build a reusable hidden-test inference script for the IHDP semi-synthetic benchmark that estimates individualized treatment effects and emits the required diagnostics artifacts."
+        },
+        {
+          "title": "LTMLE Targeted Bootstrap Simulation Study",
+          "summary": "Reconstruct a six-script R simulation pipeline for a longitudinal LMTP variance study and reproduce the required summary and report outputs from the staged public materials."
+        },
+        {
+          "title": "Reddit AI Post Codebook Boolean Coding",
+          "summary": "Read a psychology codebook PDF and complete a boolean-coded Reddit-post annotation workbook in LibreOffice Calc."
+        },
+        {
+          "title": "Atwood 2022 Measles Vaccine Coefficient Reproduction",
+          "summary": "Reproduce the six Table 2 vaccination-effect coefficient estimates from Atwood (2022) using the published paper, appendix, and archived replication package."
+        }
+      ]
+    },
+    "14.1": {
+      "domain_id": "14",
+      "code": "sports",
+      "name": "Sports",
+      "ale_n": 2,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": null,
+      "ale_examples": [
+        {
+          "title": "Go Game Reconstruction 1",
+          "summary": "Reconstruct a professional 19x19 Go game inside Sabaki from a final board image, five known opening moves, and game metadata, then export the result as SGF."
+        },
+        {
+          "title": "Aerobics World Cup Trio Difficulty Scoring",
+          "summary": "Inspect the staged aerobics trio routine video and FIG rulebook, then produce the required chronological difficulty-element spreadsheet for the routine."
+        }
+      ]
+    }
+  }
+}

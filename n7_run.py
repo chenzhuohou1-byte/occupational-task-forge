@@ -9,7 +9,7 @@
 本脚本只负责「跑 N 次 + 统计 + 按契约 §6.2 成形 + 对门槛 §6.3」。
 
 用法（真跑，花钱）：
-    ALE_LLM_PROVIDER=openai ALE_LLM_MODEL=glm-5.3-flash N7_RUNS=3 \
+    ALE_LLM_PROVIDER=openai ALE_LLM_MODEL=glm-5.3-flash N7_RUNS=10 \
     N7_TASK=zaojia-biangeng-suopei-jiesuan-001 N7_TIER=便宜档 \
     N7_OUT=runs/n7/glm.json python3 n7_run.py
 
@@ -127,7 +127,10 @@ def main():
         print("⚠️  provider=mock：这不是真实测量。真跑请设 ALE_LLM_PROVIDER=openai + ALE_LLM_MODEL",
               file=sys.stderr)
 
-    n_runs = int(os.environ.get("N7_RUNS", "2" if selftest else "3"))
+    # 默认 10 跑（原 3）。3 跑的满分率只能落在 0 / ⅓ / ⅔ / 1 四个值上，而 L1-L4 的门槛是
+    # ≥2/3、(0,2/3)、=0、≤1/3——L2 的「0<满分率<2/3」只能由 ⅓ 这一个取值命中。实算误判率：
+    # 真实满分率 0.5 的题在 n=3 下有 50% 概率被误标 L4，n=10 降到 17%。定级全靠这个数。
+    n_runs = int(os.environ.get("N7_RUNS", "2" if selftest else "10"))
     if selftest:
         _resolve_selftest(cfg)
     task = resolve_task(cfg, os.environ.get("N7_TASK", DEFAULT_TASK))
@@ -208,7 +211,8 @@ def main():
                    "reasoningEffort": os.environ.get("ALE_LLM_REASONING_EFFORT", "") or None,
                    # 附件单文件读取上限也是「换了就不可比」的一项（§6.4）：材料被截断过
                    # 和材料完整，对考生是两道题。不记下来，两条测量就没法对照。
-                   "inputLimit": int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000")),
+                   "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools == "python")
+                   else int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000")),
                    "wallClockMin": None},
         "scorerVersion": os.environ.get("N7_SCORER_VERSION", "1.0"),
         "nRuns": n_ok,

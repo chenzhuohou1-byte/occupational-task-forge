@@ -439,6 +439,9 @@ def scaffold_task(spec, tasks_dir):
         "task_id": spec["task_id"],
         "领域": domain,
         "子域": spec.get("子域", ""),
+        # 领域轴编码（判分契约 §9.1）：由框架按 ALE 码表填，不让模型自己写——
+        # 500 条规模下手工回填不可能，而领域是选题时就定了的、必须前置。
+        "taxonomy": spec.get("taxonomy") or {},
         "任务名": name,
         "prompt": spec["prompt"],
         "交付要求": deliver,
