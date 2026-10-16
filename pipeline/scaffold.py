@@ -180,7 +180,8 @@ def _flatten(obj, prefix=""):
 
 def _eq(a, b):
     try:
-        return abs(float(a) - float(b)) <= TOL
+        # + 1e-9：浮点表示误差。abs(1.58 - 1.57) = 0.010000000000000009，容差 0.01 时会被误判错
+        return abs(float(a) - float(b)) <= TOL + 1e-9
     except (TypeError, ValueError):
         return str(a).strip() == str(b).strip()
 

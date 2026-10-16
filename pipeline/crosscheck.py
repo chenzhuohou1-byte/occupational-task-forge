@@ -63,8 +63,8 @@ class Tol:
             return str(a) == str(b)
         mode, val = self._spec(path)
         if mode == "relative":
-            return abs(fa - fb) / max(abs(fa), abs(fb), 1e-9) <= val
-        return abs(fa - fb) <= val
+            return abs(fa - fb) / max(abs(fa), abs(fb), 1e-9) <= val + 1e-12
+        return abs(fa - fb) <= val + 1e-9   # 浮点表示误差，见 scaffold._eq
 
 
 def _row_key(row):
