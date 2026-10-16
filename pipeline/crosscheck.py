@@ -121,6 +121,46 @@ def load_case(case_dir):
     return gen, s1, s2, asserts, table
 
 
+def _world_brief(world, max_chars=120):
+    """世界摘要：数组/字典只报规模，标量原样（过长截断）。
+
+    完整 world 动辄上万字符。它排在「差异」前面时会把真正的线索挤出返修提示的截断窗口——
+    10-13 那条案例连着三轮改 规则.md、而 bug 一直在 solve.py，就是这么来的。
+    """
+    out = {}
+    for k, v in (world or {}).items():
+        if isinstance(v, list):
+            out[k] = "共 %d 项" % len(v)
+        elif isinstance(v, dict):
+            out[k] = "共 %d 键：%s" % (len(v), list(v)[:8])
+        else:
+            s = str(v)
+            out[k] = s if len(s) <= max_chars else s[:max_chars] + "…"
+    return out
+
+
+def _brief(entry, key="差异", keep=12):
+    """把一条不一致/断言破坏整理成「线索在前、世界摘要在后」。"""
+    if not entry:
+        return None
+    items = entry.get(key) or []
+    out = {"序号": entry.get("序号"), key: items[:keep]}
+    if len(items) > keep:
+        out["%s省略条数" % key] = len(items) - keep
+    out["world摘要"] = _world_brief(entry.get("world"))
+    return out
+
+
+def _path_hist(mism, top=8):
+    """全部不一致的差异路径分布。多条不一致落在同一个 path 上时，这一行直接指出该改哪。"""
+    c = {}
+    for m in mism:
+        for d in m.get("差异") or []:
+            p = d.get("path") or d.get("错误") or ""
+            c[p] = c.get(p, 0) + 1
+    return [{"path": p, "次数": n} for p, n in sorted(c.items(), key=lambda x: (-x[1], x[0]))[:top]]
+
+
 def crosscheck(case_dir, n=200, seed=0, global_tol=1e-6):
     """跑 n 个世界，逐字段比对两份实现，并对 solve 输出跑一致性断言。返回报告 dict。"""
     gen, s1, s2, asserts, table = load_case(case_dir)
@@ -160,8 +200,10 @@ def crosscheck(case_dir, n=200, seed=0, global_tol=1e-6):
         "世界数": len(worlds), "全局容差": global_tol, "逐字段容差条数": len(table or {}),
         "不一致数": len(mism), "断言破坏数": len(broken), "一致": not mism and not broken,
         "首次不一致出现在第几个世界": (mism[0]["序号"] if mism else None),
-        "第一个反例": mism[0] if mism else None,
-        "第一个断言破坏": broken[0] if broken else None,
+        "差异路径分布": _path_hist(mism),
+        "不一致世界序号": [m["序号"] for m in mism[:50]],
+        "第一个反例": _brief(mism[0] if mism else None),
+        "第一个断言破坏": _brief(broken[0] if broken else None, key="破坏的恒等式"),
     }
 
 
@@ -198,6 +240,20 @@ def _selftest():
         and rep["首次不一致出现在第几个世界"] <= 5
     print(("✓" if c else "✗") + " bug_boundary：边界采样 ≤5 世界内抓到（第 %s 个）"
           % rep["首次不一致出现在第几个世界"]); ok &= c
+
+    # 返修线索可读性：差异排在 world 摘要前面，且完整 world 不进报告（否则线索被截断窗口挤掉）
+    ex = rep["第一个反例"]
+    keys = list(ex)
+    c = ("world" not in ex and keys.index("差异") < keys.index("world摘要")
+         and all(isinstance(v, str) for v in ex["world摘要"].values())
+         and len(json.dumps(ex, ensure_ascii=False, default=str)) < 2000)
+    print(("✓" if c else "✗") + " 返修线索：第一个反例「差异」在前、world 只给摘要（%d 字符）"
+          % len(json.dumps(ex, ensure_ascii=False, default=str))); ok &= c
+
+    c = bool(rep["差异路径分布"]) and rep["差异路径分布"][0]["次数"] >= 1 \
+        and len(rep["不一致世界序号"]) == min(50, rep["不一致数"])
+    print(("✓" if c else "✗") + " 差异路径分布：最高频 path=%r（%d 次）"
+          % (rep["差异路径分布"][0]["path"], rep["差异路径分布"][0]["次数"])); ok &= c
 
     gen, s1, s2, _, _ = load_case(bug)
     rnd = gen.worlds(200, 0, boundary=False)

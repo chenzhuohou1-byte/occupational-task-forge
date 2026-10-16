@@ -10,7 +10,7 @@
 
 ## 1. 起草（N1–N5）
 ```
-python -m pipeline.cli build --occupation "某职业" --faces 3
+python -m pipeline.cli build --subdomain "6.1" --faces 3
 ```
 得到 N1 工作面 + 草稿 + 可跑骨架（task_card 已是契约 v1 schema、含独立判分器）。也可手写 spec 调 `scaffold.scaffold_task`。骨架自带 TODO 清单。
 
@@ -38,8 +38,8 @@ python -m pipeline.cli qc --all                 # 要 进库=True（六条件：
 
 ## 7. 难度体检（契约 §6.3，决定算不算有效数据）
 ```
-ALE_LLM_MODEL=glm-5.3-flash   ALE_LLM_REASONING_EFFORT=low N7_RUNS=3 N7_TIER=便宜档 N7_TASK=<id> N7_OUT=runs/n7/<id>-glm.json python3 n7_run.py
-ALE_LLM_MODEL="Claude Sonnet 5.5" ALE_LLM_REASONING_EFFORT=low N7_RUNS=3 N7_TIER=前沿档 ALE_LLM_INTER_RUN_SLEEP=100 N7_TASK=<id> N7_OUT=runs/n7/<id>-sonnet.json python3 n7_run.py
+ALE_LLM_MODEL=glm-5.3-flash   ALE_LLM_REASONING_EFFORT=low N7_MODE=agent N7_TOOLS=python N7_RUNS=3  N7_TIER=便宜档 N7_TASK=<id> N7_OUT=runs/n7/<id>-glm.json python3 n7_run.py
+ALE_LLM_MODEL="Claude Sonnet 5.5" ALE_LLM_REASONING_EFFORT=low N7_MODE=agent N7_TOOLS=python N7_RUNS=10 N7_TIER=前沿档 ALE_LLM_INTER_RUN_SLEEP=100 N7_TASK=<id> N7_OUT=runs/n7/<id>-sonnet.json python3 n7_run.py
 ```
 - **分级（契约 §6.3 第二版）**：便宜档 3 跑 ≥ 2/3 满分 = L1；其余由前沿档（Sonnet 5.5，至少 10 跑）满分率定：
   >30% L2 / 10–30% L3 / ≤10% L4，对标 ALE 三层的严格通过率。想做 L3/L4 就要让前沿档也做不出来。

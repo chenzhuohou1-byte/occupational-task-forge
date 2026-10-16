@@ -7,7 +7,7 @@
 
 协议刻意用**纯文本 JSON 动作**，不依赖各家的 function-calling，网关上什么模型都能当考生：
   {"action":"list_files"}                       列出 input/ 下全部文件
-  {"action":"read_file","path":"..."}           读一份附件（文本化后给，带长度上限）
+  {"action":"read_file","path":"...","offset":0}  读一份附件（分页；返回剩余字符数）
   {"action":"write_file","path":"...","content":"..."}  往 output/ 写一个交付文件
   {"action":"finish"}                           交卷
 
@@ -18,6 +18,10 @@
 为什么默认要能跑代码：ALE 的 agent 在沙箱里有完整 shell（vm_mcp_server.run_command），
 157 张任务卡里 99 张把 Python 列进 software。只给读写文件，测出来的「难」有一部分是
 「心算出错」（EDA 那条两跑 0.99 都只错在总额少加 1 元）—— 那是我们考法的负担，不是题难。
+
+read_file 为什么要分页：真实附件动辄几万字符（ALE 的最大单份附件中位 16221、P75 26 万），
+一次整份塞回去要么撑爆上下文、要么被 ALE_N7_INPUT_LIMIT 悄悄截断——而截断会让题变成不可解、
+测出来的难度是假的。分页把「附件多大」和「单次返回多大」解耦，附件规模才能往真实量级走。
 """
 import json
 import os
@@ -29,6 +33,11 @@ import tempfile
 from . import harness, qc
 
 TOOLSETS = {"python": "agent-file-python", "file": "agent-file-tools"}
+# read_file 每页字符数。默认沿用 ALE_N7_INPUT_LIMIT（n7_run 记进 budget.inputLimit），
+# 保证 10-15 起的 agent-file-python 测量口径不变；ALE_N7_PAGE_CHARS 可单独覆盖。
+PAGE_CHARS = int(os.environ.get("ALE_N7_PAGE_CHARS") or os.environ.get("ALE_N7_INPUT_LIMIT") or "8000")
+# 旧考法（file）整份返回、不分页，超过这个上限即截断并拒跑（截断＝题不可解）
+FILE_LIMIT = int(os.environ.get("ALE_N7_FILE_LIMIT", "150000"))
 
 PROTOCOL = """你在一个沙箱里完成任务。只能用下面四个动作，**每轮只回一个 JSON 对象、不要任何其它文字**：
 {"action":"list_files"}
@@ -37,6 +46,26 @@ PROTOCOL = """你在一个沙箱里完成任务。只能用下面四个动作，
 {"action":"finish"}
 规则：input/ 只读、output/ 是你唯一能写的目录；交付文件必须严格按「交付要求」的文件名与格式；
 写完全部交付文件后再 finish。最多 %d 步，步数用完即交卷。"""
+
+
+def _page(name, text, offset):
+    """按 offset 切一页，并把「总长/本次区间/剩余」明确告诉模型——它得知道自己有没有读完。"""
+    total = len(text)
+    try:
+        off = max(0, min(int(offset or 0), total))
+    except (TypeError, ValueError):
+        off = 0
+    chunk = text[off:off + PAGE_CHARS]
+    end = off + len(chunk)
+    left = total - end
+    head = "%s 第 %d-%d 字符（共 %d）" % (name, off, end, total)
+    if left > 0:
+        head += "；还剩 %d 字符，用 {\"action\":\"read_file\",\"path\":\"%s\",\"offset\":%d} 继续读，或 run_python 直接解析原文件" % (
+            left, name, end)
+    else:
+        head += "；已到文件末尾"
+    return head + "：\n" + chunk
+
 
 PROTOCOL_PY = """你在一个沙箱里完成任务。只能用下面五个动作，**每轮只回一个 JSON 对象、不要任何其它文字**：
 {"action":"list_files"}
@@ -130,18 +159,19 @@ def _out_files(out_dir):
     return sorted(res)
 
 
-def _page(text, offset, size):
-    """read_file 分页：不再截断丢材料，而是告诉模型从哪继续读。"""
-    offset = max(0, int(offset or 0))
-    chunk = text[offset:offset + size]
-    rest = len(text) - offset - len(chunk)
-    note = ("\n[本页 %d–%d / 共 %d 字符；还剩 %d 字符，用 offset=%d 继续读，或 run_python 直接解析原文件]"
-            % (offset, offset + len(chunk), len(text), rest, offset + len(chunk))) if rest > 0 else ""
-    return chunk + note
+def _listing(inputs, paged=True):
+    """清单带字符数与页数——模型据此估步数预算，不然它不知道一份 4 万字符的表要读 7 次。
+    旧考法（不分页）只给字符数，保持对照基线不变。"""
+    if not paged:
+        return "\n".join("  %s  (%d 字符)" % (k, len(v)) for k, v in inputs.items())
+    return "\n".join(
+        "  %s  (%d 字符，需 read_file %d 次)" % (k, len(v), max(1, -(-len(v) // PAGE_CHARS)))
+        for k, v in inputs.items())
 
 
-def _listing(inputs):
-    return "\n".join("  %s  (%d 字符)" % (k, len(v)) for k, v in inputs.items())
+def pages_needed(inputs):
+    """读完全部附件所需的 read_file 次数。maxSteps 要按页数算，不是按文件数。"""
+    return sum(max(1, -(-len(v) // PAGE_CHARS)) for v in inputs.values())
 
 
 def _first_action(text):
@@ -165,13 +195,12 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
     if tools not in TOOLSETS:
         raise ValueError("tools 只认 %s，给的是 %r" % (list(TOOLSETS), tools))
     py = tools == "python"
-    page = int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000"))
     wd = tempfile.mkdtemp(prefix="ale_n7agent_")
     harness.setup_env(task, wd)
     if py:   # 分页读，材料不丢 → 不存在「截断成不可解」，附件不必再为 8000 字符压体积
         inputs, _ = qc._read_inputs(os.path.join(wd, "input"), limit=10 ** 9)
     else:
-        inputs, truncated = qc._read_inputs(os.path.join(wd, "input"))
+        inputs, truncated = qc._read_inputs(os.path.join(wd, "input"))   # 旧考法口径不动
         if truncated and os.environ.get("ALE_N7_ALLOW_TRUNCATION", "") != "1":
             raise RuntimeError("附件被截断，题目不可解、测出来的难度是假的：%s"
                                % json.dumps(truncated, ensure_ascii=False))
@@ -184,7 +213,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
         {"role": "user", "content": "\n".join([
             task.card.get("prompt", ""), "", "## 交付要求",
             json.dumps(task.card.get("交付要求", {}), ensure_ascii=False, indent=2),
-            "", "## input/ 文件清单（用 read_file 按需读）", _listing(inputs),
+            "", "## input/ 文件清单（用 read_file 按需读）", _listing(inputs, py),
             "", "现在开始，回一个动作 JSON。"])},
     ]
 
@@ -207,14 +236,14 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                 valid += 1
                 kind = act.get("action")
                 if kind == "list_files":
-                    obs = "input/ 文件清单：\n" + _listing(inputs)
+                    obs = "input/ 文件清单：\n" + _listing(inputs, py)
                 elif kind == "read_file":
                     p = str(act.get("path", "")).lstrip("/")
                     p = p[len("input/"):] if p.startswith("input/") else p
                     if p not in inputs:
-                        obs = "没有这个文件。清单：\n" + _listing(inputs)
+                        obs = "没有这个文件。清单：\n" + _listing(inputs, py)
                     elif py:
-                        obs = "%s 的内容：\n%s" % (p, _page(inputs[p], act.get("offset"), page))
+                        obs = _page(p, inputs[p], act.get("offset", 0))
                     else:
                         obs = "%s 的内容：\n%s" % (p, inputs[p])
                 elif kind == "run_python" and py:
@@ -243,7 +272,10 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                     obs = ("不认识的 action=%r，只许 list_files/read_file/write_file/%sfinish。"
                            % (kind, "run_python/" if py else ""))
             trace.append({"step": step + 1, "action": (act or {}).get("action", "<解析失败>"),
-                          "path": (act or {}).get("path")})
+                          "path": (act or {}).get("path"),
+                          # 多页读取的轨迹不记 offset 事后没法复盘它到底读了哪一段
+                          **({"offset": (act or {}).get("offset", 0)}
+                             if (act or {}).get("action") == "read_file" else {})})
             left = max_steps - step - 1
             msgs.append({"role": "user", "content": "%s\n[还剩 %d 步；步数用完即交卷，"
                          "务必留足步数把交付文件写出来]" % (obs, left)})
@@ -348,6 +380,35 @@ def _selftest():
         print("agentsolve 自测②协议噪声→测量故障 OK")
     else:
         raise AssertionError("全程协议噪声居然没抛测量故障")
+
+    # 分页：按 offset 切片、告知总长与剩余、读到末尾不再提示继续、offset 越界不崩
+    long_text = "".join("第%05d行,数值%d\n" % (i, i) for i in range(2000))   # 约 2.8 万字符
+    p1 = _page("大表.csv", long_text, 0)
+    body1 = p1.split("：\n", 1)[1]
+    assert len(body1) == PAGE_CHARS, "首页长度应为 %d，实际 %d" % (PAGE_CHARS, len(body1))
+    assert body1 == long_text[:PAGE_CHARS], "首页内容不是文件开头"
+    assert ("共 %d" % len(long_text)) in p1 and "还剩" in p1 and '"offset":%d' % PAGE_CHARS in p1, p1
+    p2 = _page("大表.csv", long_text, PAGE_CHARS)
+    assert p2.split("：\n", 1)[1] == long_text[PAGE_CHARS:PAGE_CHARS * 2], "第二页接得不对"
+    last = _page("大表.csv", long_text, len(long_text) - 10)
+    assert "已到文件末尾" in last and "还剩" not in last, last
+    over = _page("大表.csv", long_text, len(long_text) + 999)
+    assert "已到文件末尾" in over and over.endswith("：\n"), "offset 越界应返回空内容而不是崩"
+    n_pages = max(1, -(-len(long_text) // PAGE_CHARS))
+    assert pages_needed({"大表.csv": long_text}) == n_pages
+    print("agentsolve 自测③read_file 分页 OK（%d 字符 → %d 页，单页 %d 字符）"
+          % (len(long_text), n_pages, PAGE_CHARS))
+
+    # 分页后 agent 能跨页读完同一份附件：两次 read_file 拿到不同内容
+    ok, r = agent_solve(t, _ScriptedClient([
+        json.dumps({"action": "read_file", "path": "采购清单.csv", "offset": 0}),
+        json.dumps({"action": "read_file", "path": "采购清单.csv", "offset": 5}),
+        json.dumps({"action": "finish"}),
+    ]), max_steps=6)
+    obs = [s for s in r["trace"] if s["action"] == "read_file"]
+    assert len(obs) == 2 and [s["offset"] for s in obs] == [0, 5], obs
+    print("agentsolve 自测④跨页读取 OK（offset 生效并记进轨迹：%s）"
+          % [s["offset"] for s in obs])
     return True
 
 
