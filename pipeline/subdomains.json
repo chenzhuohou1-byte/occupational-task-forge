@@ -3,7 +3,8 @@
     "来源": "agents-last-exam-metadata/task_cards.parquet（153 行，153 行有 subdomain_id）",
     "取数时间": "2026-10-14",
     "口径": "只用 taxonomy.domain_id/subdomain_id；不用 category——它与 domain_code 有 18 行以上不一致，且这批标签是 gpt-4o-mini 回填的（110/157）",
-    "槽位": "实测 51 个 + 编号空洞 6 个 = 57。官方宣称 55、实测 51，差异显式保留不抹平",
+    "槽位": "57 槽位 = 51 有题 + 6 空槽（code/name 为 null、enabled=false：1.4/1.7/1.9/8.3/10.1/10.2）。官方全量 taxonomy 为 13 簇 / 55 子域（论文 arXiv:2606.05405 + 仓库 rdi-berkeley/agents-last-exam README），本快照实测可见 51，差异显式保留不抹平。51+6=57>55，推断 6 个空槽里约 2 个只是上游编号跳号、真缺 4 个（51+4=55 吻合）——此为假设，未经一手证实。选题轴按 55 的空间规划，不要截到 51。",
+    "大类号": "domain_id 1–14 全部来自上游 parquet，没有自建项。14 的 code `other` 只是我们起的名，其下 14.1 sports（Sports）有 2 道真实公开题（Go Game Reconstruction / Aerobics World Cup Trio Difficulty Scoring）。「数据工程与统计」在 9.2 data_analytics（Data & Analytics Engineering，computing_math 下），不在 14。",
     "重建": "python3 -m pipeline.subdomains --rebuild <metadata 目录>"
   },
   "domains": {
