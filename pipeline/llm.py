@@ -98,7 +98,11 @@ class OpenAICompatClient(LLMClient):
                 with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
 
                     data = json.loads(r.read())
-                usage = data.get("usage", {})
+                # 网关偶发回 200 但 choices 为 null（错误信封，如上游超时）：当瞬时故障重试，
+                # 而不是让 `None[0]` 抛 TypeError 绕过重试（实测 ward 那条一个槽位连挂三次）
+                if not (isinstance(data, dict) and data.get("choices")):
+                    raise ConnectionError("网关返回无 choices：%s" % json.dumps(data, ensure_ascii=False)[:300])
+                usage = data.get("usage") or {}
                 choice = data["choices"][0]
                 detail = usage.get("completion_tokens_details") or {}
                 return LLMResult(
