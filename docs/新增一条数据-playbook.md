@@ -41,7 +41,8 @@ python -m pipeline.cli qc --all                 # 要 进库=True（六条件：
 ALE_LLM_MODEL=glm-5.3-flash   ALE_LLM_REASONING_EFFORT=low N7_RUNS=3 N7_TIER=便宜档 N7_TASK=<id> N7_OUT=runs/n7/<id>-glm.json python3 n7_run.py
 ALE_LLM_MODEL="Claude Sonnet 5.5" ALE_LLM_REASONING_EFFORT=low N7_RUNS=3 N7_TIER=前沿档 ALE_LLM_INTER_RUN_SLEEP=100 N7_TASK=<id> N7_OUT=runs/n7/<id>-sonnet.json python3 n7_run.py
 ```
-- **便宜档必须 fullPassRate=0**；前沿档 ≤ 1/3。便宜模型能满分 = 水题、退回加难。
+- **分级（契约 §6.3 第二版）**：便宜档 3 跑 ≥ 2/3 满分 = L1；其余由前沿档（Sonnet 5.5，至少 10 跑）满分率定：
+  >30% L2 / 10–30% L3 / ≤10% L4，对标 ALE 三层的严格通过率。想做 L3/L4 就要让前沿档也做不出来。
 - **加难杠杆按实测强弱排序**（强的先用）：
   1. **跨文档对账 + 漏项要自己挖出来**，且漏了整题 0（造价 BG-05：申报表编号跳号、取消项无对应申报行）。这是目前唯一把前沿档均分压到 0.5 以下的配方。
   2. **输出字段多、附件多**（造价 22 份附件 / 14 个输出字段）。

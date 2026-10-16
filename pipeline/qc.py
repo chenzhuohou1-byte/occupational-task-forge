@@ -14,8 +14,11 @@ from . import harness
 # ---- §6.3 难度分级 / §7 用途 的两组常量（2026-10-14 口径变更） ----
 CHEAP_MODEL = "glm-5.3-flash"           # 便宜档基准模型（measuredDifficulty.model 的小写形式）
 FRONTIER_MODEL = "claude sonnet 5.5"    # 前沿档基准模型（网关实收名，见契约 §6.3）
-L1_FLOOR = 2.0 / 3 - 1e-9               # 便宜档满分率 ≥ 2/3 → L1
-L4_CEIL = 1.0 / 3 + 1e-9                # 前沿档满分率 ≤ 1/3 → L4
+L1_FLOOR = 2.0 / 3 - 1e-9               # 便宜档满分率 ≥ 2/3 → L1（便宜档只用来切这一刀）
+# 前沿档两刀按 ALE 论文的严格通过率刻度（§6.3）：最难层 Last-Exam 0–9%、全谱层 Full-Spectrum 13–20%
+L4_CEIL = 0.10 + 1e-9                   # 前沿档满分率 ≤ 10% → L4（≈ ALE Last-Exam）
+L3_CEIL = 0.30 + 1e-9                   # 前沿档满分率 ≤ 30% → L3（≈ ALE Full-Spectrum）
+FRONT_MIN_RUNS = 10                     # 前沿档要切 10% / 30% 两刀，3 跑的分辨率（⅓）不够
 PURPOSES = ("训练集", "测试集")
 
 
@@ -209,24 +212,19 @@ def _md_row(e):
 
 
 def difficulty_tier(task):
-    """§6.3 难度分级 —— 难度从「准入门槛」改成「标签」（2026-10-14 口径变更）。
+    """§6.3 难度分级（2026-10-16 第二版：前沿档按 ALE 刻度切）。
 
-    旧规则是「便宜档满分率必须 = 0 **且** 前沿档 ≤ 1/3，达不到＝太软、退回或淘汰」。
-    那是一道硬过滤，会把所有不难的题扔掉 —— 而新目标（ALE 高仿训练语料 + 自用标尺）
-    正要这些题：500 条要分 3–4 级，不必都难到顶。所以难度不再参与进库判定（§8），
-    改成算一个 tier 标签。**质量闸门一条没放松**：判分可复现、判分器独立、四档夹具
-    自证、两档地板 ≤ 0、题面不泄答案、依据可定位，全在 N6/N8 原地不动。
+    难度只是标签、不参与进库判定（§8）；质量闸门 N6/N8 一条没放松。
 
-    分级只用两档满分率（都已在测，不额外花钱）：
-      便宜档 fpr ≥ 2/3                    → L1 入门
-      0 < 便宜档 fpr < 2/3                → L2 基础
-      便宜档 fpr = 0 且 前沿档 fpr > 1/3  → L3 进阶
-      便宜档 fpr = 0 且 前沿档 fpr ≤ 1/3  → L4 困难
-
-    **L1/L2 由便宜档单独定死**（另外三级都要求便宜档 = 0，互斥），只有 L3/L4 的分界要
-    前沿档。缺前沿档时给**推定级 `L3+`**（`级别来源=推定`）而不是「未测」—— 这正是
-    §6.5「全量跑便宜档、只给测试集与抽样跑前沿档」那条省钱路线的程序化形式：前沿档
-    13.7 元/条，500 条全跑是 6850 元，而它只用来切 L3|L4 这一刀。
+    为什么改第二版：能跑代码之后（agent-file-python），便宜档几乎只剩两种结果——
+    ≥0.98 或 0，3 跑的满分率在 0/⅓/⅔/1 之间跳，用它切 L2|L3 等于在量噪声。所以
+    **便宜档只用来认出 L1**，L2–L4 由前沿档满分率定，门槛对齐 ALE 论文的严格通过率：
+      便宜档 fpr ≥ 2/3                 → L1 入门（前沿档不必跑）
+      否则看前沿档 fpr：  > 30%         → L2 基础（≈ ALE Near-Term 及更易）
+                         10% < f ≤ 30% → L3 进阶（≈ ALE Full-Spectrum）
+                         ≤ 10%         → L4 困难（≈ ALE Last-Exam）
+    缺前沿档时给推定级：便宜档 = 0 → `L3+`；0 < 便宜档 < 2/3 → `L2`（前沿档几乎必然更高）。
+    前沿档 nRuns < 10 也只给推定级：要切 10% / 30% 两刀，3 跑的分辨率不够。
 
     返回 `(可判定?, 明细)`。可判定只要求有一条当前判分器下的 agent 档便宜档测量；
     连这个都没有＝未测，**未测不是 L1**（水题也得测出来才算水题）。
@@ -253,25 +251,24 @@ def difficulty_tier(task):
     hedge = []
     if cfpr >= L1_FLOOR:
         tier, note = "L1", "便宜档满分率 %.4f ≥ 2/3：便宜模型就能做出来，前沿档不必跑" % cfpr
-    elif cfpr > 0:
-        tier, note = "L2", ("0 < 便宜档满分率 %.4f < 2/3：便宜档单独定级（L1/L3/L4 都被排除）"
-                            % cfpr)
     elif isinstance(ffpr, (int, float)):
-        tier = "L4" if ffpr <= L4_CEIL else "L3"
-        note = "便宜档 0 + 前沿档 %.4f %s 1/3" % (ffpr, "≤" if tier == "L4" else ">")
+        tier = "L4" if ffpr <= L4_CEIL else ("L3" if ffpr <= L3_CEIL else "L2")
+        note = "便宜档 %.4f < 2/3；前沿档满分率 %.4f（mean %s）→ %s（ALE 刻度：≤10%% L4 / ≤30%% L3）" % (
+            cfpr, ffpr, front.get("meanScore"), tier)
+        fn = front.get("nRuns") or 0
+        if fn < FRONT_MIN_RUNS:
+            hedge.append("前沿档 nRuns=%d < %d，切不开 10%%/30%% 两刀，需补跑" % (fn, FRONT_MIN_RUNS))
+    elif cfpr > 0:
+        tier, note = "L2", "0 < 便宜档满分率 %.4f < 2/3，缺前沿档：前沿档几乎必然更高，推定 L2" % cfpr
+        hedge.append("缺前沿档：%s" % front_why)
     else:
-        tier, note = "L3+", "便宜档满分率 = 0，但缺当前前沿档 agent 测量，L3/L4 分不开"
+        tier, note = "L3+", "便宜档满分率 = 0，缺当前前沿档 agent 测量，L2/L3/L4 分不开"
         hedge.append("缺前沿档：%s" % front_why)
 
-    # 擦线补跑（沿用旧 §6.3 的 nRuns 纪律，判据随边界位置变）：3 跑只能落在 0/⅓/⅔/1，
-    # 而分级边界恰好在 ⅔（L1|L2）与 ⅓（L3|L4）——擦线的题会靠运气落到相邻一级。
-    # 现在擦线不再「不通过」，而是降成推定级：标签照给，但别拿它当实测数字用。
+    # 擦线补跑：便宜档 3 跑只能落在 0/⅓/⅔/1，L1|L2 边界恰在 ⅔ 上，擦线的题靠运气落级
     cn = cheap.get("nRuns") or 0
     if abs(cfpr - 2.0 / 3) < 1e-9 and cn < 6:
         hedge.append("便宜档 fpr 正落在 L1|L2 边界 2/3 上而 nRuns=%d < 6，需补跑" % cn)
-    if tier in ("L3", "L4") and abs(ffpr - 1.0 / 3) < 1e-9 and (front.get("nRuns") or 0) < 6:
-        hedge.append("前沿档 fpr 正落在 L3|L4 边界 1/3 上而 nRuns=%d < 6，需补跑"
-                     % (front.get("nRuns") or 0))
     legacy = [n for n, e in (("便宜档", cheap), ("前沿档", front))
               if e and str(e.get("toolset")) == LEGACY_AGENT_TOOLSET]
     if legacy:
