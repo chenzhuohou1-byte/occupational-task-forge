@@ -152,7 +152,8 @@ SCORER_TEMPLATE = r'''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """通用判分器（pipeline.scaffold 生成）—— 判分契约 v1.0 §1/§2，独立可跑、不 import 其他模块。
 
-比对 output/ 与 reference/expected/：JSON 逐叶子 / CSV 逐格 / 文本规范化，数值带容差 TOL。
+比对 output/ 与 reference/expected/：JSON 逐叶子 / CSV 逐格 / 文本规范化。
+数值容差按任务卡 evaluation.tolerance 声明的 mode/value 走（§9.2 四档），非数值一律精确。
 硬闸门（任一不过 → 整题 0）：缺交付文件 / CSV 首列行键集合不一致 / JSON 缺顶层键。
 只读 --output / --reference，不碰 input/，不 import 造题/生成器代码（§8 独立性）。
 """
@@ -162,7 +163,20 @@ import json
 import os
 import sys
 
-TOL = 0.01
+
+def _load_tol():
+    """从同目录上级的 task_card.json 读 evaluation.tolerance（判分契约 §3/§9.2）。
+    判分器不加新 flag（§1），按相对 __file__ 的固定位置定位任务卡；读不到回落 absolute 0.01。"""
+    card = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "task_card.json")
+    try:
+        with open(card, encoding="utf-8") as f:
+            tol = (json.load(f).get("evaluation") or {}).get("tolerance") or {}
+        return str(tol.get("mode", "absolute")), float(tol.get("value", 0.01))
+    except (OSError, ValueError, TypeError):
+        return "absolute", 0.01
+
+
+TOL_MODE, TOL_VAL = _load_tol()
 
 
 def _flatten(obj, prefix=""):
@@ -179,11 +193,18 @@ def _flatten(obj, prefix=""):
 
 
 def _eq(a, b):
+    """逐字段比对：非数值一律精确（字符串/标签/ID），数值按任务卡声明的容差模式比。
+    exact=仅精确；absolute=|a-b|<=v；relative=|a-b|<=v*max(|a|,|b|)；banded 回落 absolute（真分档需专用判分器）。"""
+    if TOL_MODE == "exact":
+        return str(a).strip() == str(b).strip()
     try:
-        # + 1e-9：浮点表示误差。abs(1.58 - 1.57) = 0.010000000000000009，容差 0.01 时会被误判错
-        return abs(float(a) - float(b)) <= TOL + 1e-9
+        fa, fb = float(a), float(b)
     except (TypeError, ValueError):
         return str(a).strip() == str(b).strip()
+    # + 1e-9：浮点表示误差。abs(1.58 - 1.57) = 0.010000000000000009，容差 0.01 时会被误判错
+    if TOL_MODE == "relative":
+        return abs(fa - fb) <= TOL_VAL * max(abs(fa), abs(fb), 1e-12) + 1e-9
+    return abs(fa - fb) <= TOL_VAL + 1e-9   # absolute / banded 回落
 
 
 def _row_key(items):
@@ -292,7 +313,8 @@ def _emit(score, passed, errors, details, missing=(), extra=()):
     print(json.dumps({
         "score": round(float(score), 4), "passed": bool(passed), "errors": list(errors),
         "details": details, "missing_paths": list(missing), "extra_paths": list(extra),
-        "meta": {"scorer": "score_outputs.py", "version": "1.0", "mode": "generic_tabular"},
+        "meta": {"scorer": "score_outputs.py", "version": "1.1", "mode": "generic_tabular",
+                 "tolerance": {"mode": TOL_MODE, "value": TOL_VAL}},
     }, ensure_ascii=False))
     return 0
 
@@ -469,7 +491,7 @@ def scaffold_task(spec, tasks_dir):
             "composition": ["gate_and_score"],
             "locale": "host",
             "scorer": "scripts/score_outputs.py",
-            "scorerVersion": "1.0",   # 改判分器就改这里：旧 measuredDifficulty 随即作废（§6.2）
+            "scorerVersion": "1.1",   # 改判分器就改这里：旧 measuredDifficulty 随即作废（§6.2）
             "passRule": "交付文件齐全 AND 集合/键一致（硬闸门）AND 逐字段全对",
             "hardGates": [
                 "缺任一交付文件 → 0",
