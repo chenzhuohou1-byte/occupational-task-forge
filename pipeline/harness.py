@@ -117,10 +117,21 @@ def evaluate(task, work_dir):
         why = ("判分器故障（退出码 %d）：" % r.returncode) if r.returncode else "判分器未输出合法 JSON："
         detail = why + (r.stderr or r.stdout)[:800]
         return EvalResult(task.task_id, 0.0, False, errors=[detail], fault=detail)
+    if not isinstance(data, dict):
+        return EvalResult(task.task_id, 0.0, False, fault="判分器 JSON 必须为对象")
+    fault = str(data.get("fault") or "")
+    executable = (task.card.get("evaluation") or {}).get("type") == "executable_artifact"
+    # 老任务存在 exit 1 表示答错的历史接口；新范式严格执行 exit 0/2 契约。
+    if r.returncode and (executable or r.returncode != 1):
+        fault = fault or "判分器异常退出码 %d：%s" % (r.returncode, r.stderr[:400])
+    # 可执行范式判分器（§9.5）会在 JSON 里直接带 `fault`（引擎/容器不可达，退出码 2）——
+    # 这类是测量故障而非 agent 0 分，必须透传给调用方（N6/N7/N8）。数值判分器从不吐
+    # 这个键，data.get(..., "") 回落空串，老行为不变。
     return EvalResult(task.task_id, data.get("score", 0.0),
                       bool(data.get("passed", False)),
                       details=data.get("details", []),
-                      errors=list(data.get("errors", [])), raw=data)
+                      errors=list(data.get("errors", [])), raw=data,
+                      fault=fault)
 
 
 

@@ -427,9 +427,12 @@ def scaffold_task(spec, tasks_dir):
     """从草案 spec 生成可跑任务骨架，返回 {dir, todos}（带附件规格时多一个 附件 字段）。
 
     spec 必填：领域、任务名、task_id、prompt、交付要求(dict: 输出文件名->说明)
-    spec 选填：难度层、附件计划(list: input 文件名)、元数据(dict)、conventions(list)、
+    spec 选填：范式（numeric_tabular 默认 / executable_artifact，见 scaffold_executable_task）、
+              难度层、附件计划(list: input 文件名)、元数据(dict)、conventions(list)、
               附件规格(dict: 见 attachments.materialize，带它就造真实附件而非占位符)
     """
+    if spec.get("范式") == "executable_artifact":
+        return scaffold_executable_task(spec, tasks_dir)
     domain = spec["领域"]
     name = spec["任务名"]
     task_dir = os.path.join(tasks_dir, _safe_seg(domain, 40), _safe_seg(name, 40))
@@ -610,6 +613,273 @@ def sync_schema(task_dir):
     card["交付要求"] = deliver
     _write(card_path, json.dumps(card, ensure_ascii=False, indent=2) + "\n")
     return {"updated": deliver}
+
+
+# ===== 可执行产物范式（executable_artifact，判分契约 §9.5）=====
+# 薄壳 main.py：把生命周期委托给 pipeline.executable.runner，判分器不信任自报。
+MAIN_TEMPLATE_EXEC = r'''#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""__TASK_TITLE__ —— 可执行产物范式任务（判分契约 §9.5）。
+
+交付可执行工程产物；判分器在真实工具链（引擎/容器）上部署执行、从运行状态独立重算，
+不信任候选自报。生命周期 start / golden / neg / evaluate 全部委托给
+pipeline.executable 的范式无关基建。
+"""
+import argparse
+import json
+import os
+import shutil
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+INPUT = os.path.join(HERE, "assets", "input")
+REFERENCE = os.path.join(HERE, "assets", "reference")
+IGNORE = shutil.ignore_patterns(".DS_Store", "__pycache__", "*.pyc")
+
+
+def _card():
+    with open(os.path.join(HERE, "task_card.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _deliverables(card):
+    return list(card.get("交付要求", {}).keys())
+
+
+def start(work):
+    dst = os.path.join(work, "input")
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(INPUT, dst, ignore=IGNORE)
+    os.makedirs(os.path.join(work, "output"), exist_ok=True)
+    for root, _, files in os.walk(work):
+        base = os.path.basename(root)
+        if base in ("golden", "negatives", "reference", "cases") or "expected.json" in files:
+            raise SystemExit("沙箱污染：隐藏答案疑似进了 work（%s）" % root)
+    return 0
+
+
+def _copy_out(src_dir, out, card):
+    os.makedirs(out, exist_ok=True)
+    for fn in _deliverables(card):
+        s = os.path.join(src_dir, fn)
+        if os.path.isfile(s):
+            shutil.copy(s, os.path.join(out, fn))
+    return 0
+
+
+def golden(out):
+    return _copy_out(os.path.join(REFERENCE, "golden", "output"), out, _card())
+
+
+def neg(out):
+    # 默认用第一个负例做 harness 的 neg 正例；负例清单见 assets/reference/negatives/
+    negs = os.path.join(REFERENCE, "negatives")
+    first = sorted(d for d in (os.listdir(negs) if os.path.isdir(negs) else [])
+                   if os.path.isdir(os.path.join(negs, d)))
+    if not first:
+        raise SystemExit("无负例目录 assets/reference/negatives/<name>/output/")
+    return _copy_out(os.path.join(negs, first[0], "output"), out, _card())
+
+
+def evaluate(output, reference):
+    return _run_scorer(output, reference)
+
+
+def _run_scorer(output, reference):
+    import subprocess
+    r = subprocess.run([sys.executable, os.path.join(HERE, "scripts", "score_outputs.py"),
+                        "--output", output, "--reference", reference], text=True)
+    return r.returncode
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("load")
+    p = sub.add_parser("start"); p.add_argument("--work", required=True)
+    p = sub.add_parser("golden"); p.add_argument("--out", required=True)
+    p = sub.add_parser("neg"); p.add_argument("--out", required=True)
+    p = sub.add_parser("evaluate")
+    p.add_argument("--output", required=True)
+    p.add_argument("--reference", default=REFERENCE)
+    a = ap.parse_args()
+    if a.cmd == "load":
+        print(json.dumps(_card(), ensure_ascii=False)); return 0
+    if a.cmd == "start":
+        return start(a.work)
+    if a.cmd == "golden":
+        return golden(a.out)
+    if a.cmd == "neg":
+        return neg(a.out)
+    if a.cmd == "evaluate":
+        return evaluate(a.output, a.reference)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+# 薄壳判分器：读 task_card.evaluation.engine + task_meta，调 runner。退出码透传。
+SCORER_TEMPLATE_EXEC = r'''#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""可执行范式判分器薄壳（判分契约 §9.5）。
+
+读 task_card.evaluation.engine 选适配器，组装 task_meta，调 pipeline.executable.runner。
+退出码纪律：agent 侧问题 exit 0（含部署失败/场景不过/伪造自报）；基建故障 exit 2 + fault。
+范式专属静态检查（如结构/授权）放在同目录 checks_task.py 的 extra_checks()（可选）。
+"""
+import argparse
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TASK_DIR = os.path.dirname(HERE)
+# 让 pipeline 包可被 import（产线内运行时已在 path；独立运行时兜底）
+_root = TASK_DIR
+for _ in range(6):
+    if os.path.isdir(os.path.join(_root, "pipeline", "executable")):
+        sys.path.insert(0, _root); break
+    _root = os.path.dirname(_root)
+
+from pipeline.executable import runner  # noqa: E402
+
+
+def _card():
+    with open(os.path.join(TASK_DIR, "task_card.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--reference", default=os.path.join(TASK_DIR, "assets", "reference"))
+    a = ap.parse_args()
+
+    card = _card()
+    ev = card.get("evaluation", {})
+    engine_cfg = ev.get("engine") or {}
+    task_meta = dict(ev.get("task_meta") or {})
+    task_meta.setdefault("required_deliverables", list(card.get("交付要求", {}).keys()))
+    task_meta.setdefault("self_report_crosscheck", bool(ev.get("selfReportCrossCheck")))
+    # 任务目录相关的资源路径按任务目录展开。**cases_manifest 不在此列** —— 它由
+    # runner 按 reference_dir 解析（契约 §9.5），在这里展开成 TASK_DIR 下会让 runner 找错地方。
+    for k in ("original_bpmn", "org_hierarchy", "cases_dir", "container_runner", "host_scorer"):
+        v = task_meta.get(k)
+        if isinstance(v, str) and not os.path.isabs(v):
+            task_meta[k] = os.path.join(TASK_DIR, v)
+
+    extra_checks = []
+    checks_mod = os.path.join(HERE, "checks_task.py")
+    if os.path.isfile(checks_mod):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("checks_task", checks_mod)
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        if hasattr(m, "extra_checks"):
+            extra_checks.append(m.extra_checks)
+
+    rep, code = runner.evaluate(a.output, a.reference, engine_cfg, task_meta,
+                                extra_checks=extra_checks)
+    print(json.dumps(rep, ensure_ascii=False))
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def scaffold_executable_task(spec, tasks_dir):
+    """生成 executable_artifact 范式的任务骨架（判分契约 §9.5）。
+
+    spec 必填：领域、任务名、task_id、prompt、交付要求(dict)、engine(dict: {adapter,...})
+    spec 选填：task_meta(dict)、selfReportCrossCheck(bool)、用途、元数据、taxonomy、
+              artifactModes（默认 ["executable_artifact","behavioral_world_state"]）
+    产出目录含 assets/input/、assets/reference/golden/output/、assets/reference/negatives/、
+    main.py（薄壳）、scripts/score_outputs.py（薄壳调 runner）。golden/negatives/cases 待作者填。
+    """
+    domain = spec["领域"]
+    name = spec["任务名"]
+    task_dir = os.path.join(tasks_dir, _safe_seg(domain, 40), _safe_seg(name, 40))
+    deliver = spec.get("交付要求", {})
+
+    card = {
+        "task_id": spec["task_id"],
+        "领域": domain,
+        "子域": spec.get("子域", ""),
+        "taxonomy": spec.get("taxonomy") or {},
+        "任务名": name,
+        "题型": spec.get("题型", "executable_artifact"),
+        "prompt": spec["prompt"],
+        "交付要求": deliver,
+        "环境": {
+            "input": "只读输入：真实材料 + 实例参数 + 输出契约",
+            "software": "真实工具链在宿主判分侧（引擎/容器），见 evaluation.engine",
+            "output": "agent 唯一可写目录",
+            "reference": "隐藏 cases/golden，仅判分时注入，agent 全程不可见",
+        },
+        "priorComplexity": {
+            "steps": 0, "inputDocs": 0, "crossDocJoins": 0, "plantedTraps": 0,
+            "hardStops": 0, "outputFields": len(deliver), "conventionRulings": 0,
+            "说明": "可执行范式：先验复杂度不是难度（§6.1），实测见 measuredDifficulty。",
+        },
+        "measuredDifficulty": [],
+        "tier": None,
+        "用途": spec.get("用途", "测试集"),
+        "evaluation": {
+            "type": "executable_artifact",
+            "artifactModes": spec.get("artifactModes",
+                                      ["executable_artifact", "behavioral_world_state"]),
+            "composition": ["gate_and_score"],
+            "locale": "host",
+            "scorer": "scripts/score_outputs.py",
+            "scorerVersion": "1.0",
+            "engine": spec["engine"],
+            "selfReportCrossCheck": bool(spec.get("selfReportCrossCheck", False)),
+            "task_meta": spec.get("task_meta", {}),
+            "passRule": "交付齐全 AND 部署成功 AND 全部 case 引擎实算通过 AND 自报与引擎一致",
+            "hardGates": [
+                "缺任一交付文件 → 0",
+                "候选产物无法部署/装载到真实工具链 → 0",
+                "自报运行结果与引擎独立重算不一致 → 报告完整性缺陷，整题判负",
+                "引擎/容器不可达 → 退出码 2 + fault（测量故障，非 agent 0 分）",
+            ],
+            "tolerance": {"mode": "exact", "value": 0,
+                          "rationale": "可执行范式 case 为引擎实算的 pass/fail 布尔，无数值容差。"},
+            "fixtureScores": {
+                "output_test_pos": {"expected": 1.0, "observed": None},
+                "output_test_neg": {"expected": 0.0, "observed": None},
+                "output_test_random": {"expected": 0.0, "observed": None},
+                "output_test_fabricated": {"expected": 0.0, "observed": None},
+            },
+        },
+        "元数据": spec.get("元数据", {"机器规格": "宿主工具链", "超时秒": 1800,
+                                      "判分构成": "可执行动态验收", "生成方式": "",
+                                      "schema": "判分契约 v1.0 §9.5"}),
+        "scoringBasis": spec.get("scoringBasis", []),
+    }
+
+    _write(os.path.join(task_dir, "task_card.json"),
+           json.dumps(card, ensure_ascii=False, indent=2) + "\n")
+    _write(os.path.join(task_dir, "main.py"),
+           MAIN_TEMPLATE_EXEC.replace("__TASK_TITLE__", name))
+    _write(os.path.join(task_dir, "scripts", "score_outputs.py"), SCORER_TEMPLATE_EXEC)
+    # 目录骨架占位
+    os.makedirs(os.path.join(task_dir, "assets", "input"), exist_ok=True)
+    os.makedirs(os.path.join(task_dir, "assets", "reference", "golden", "output"), exist_ok=True)
+    os.makedirs(os.path.join(task_dir, "assets", "reference", "negatives"), exist_ok=True)
+
+    todos = [
+        "填 assets/input/：真实材料 + 实例参数 + 输出契约（判据指向外部规范，不写进题面成提纲）",
+        "填 assets/reference/golden/output/：满足全部硬约束的参考交付（judged 1.0）",
+        "填 assets/reference/negatives/<name>/output/：≥1 条伪造自报负例 + 若干结构缺陷负例",
+        "填隐藏 cases（engine 适配器用）：REST 引擎=scenarios 清单；容器=cases/<id>/ + expected",
+        "按需写 scripts/checks_task.py 的 extra_checks(output_dir, task_meta)（结构/授权等静态检查）",
+        "跑 N7 定级（n7_run --write-card），scorerVersion 与 evaluation 一致",
+    ]
+    return {"dir": task_dir, "todos": todos}
 
 
 
