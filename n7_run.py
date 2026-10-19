@@ -17,7 +17,8 @@
     python3 n7_run.py --selftest
 
 门槛（§6.3）：便宜档 fullPassRate 必须 = 0；前沿档 ≤ 1/3。
-本脚本只测量、只写 N7_OUT，**不改 task_card.measuredDifficulty**（填卡是单独一步）。
+默认只测量、只写 N7_OUT；加 `--write-card`（或 N7_WRITE_CARD=1）才把 entry 追加进
+task_card.measuredDifficulty —— 原来全靠手抄，抄错/漏抄 qc 都发现不了。
 """
 import datetime
 import json
@@ -97,6 +98,59 @@ def _resolve_selftest(cfg):
     print("[selftest] resolve_task：空/不存在/多重匹配均报错退出，唯一匹配命中", file=sys.stderr)
 
 
+def write_card(task, entry):
+    """把一条测量 entry 追加进 task_card.measuredDifficulty（§6.2：每次测量追加一条）。
+
+    只追加、不改旧条目；完全相同的 entry 已在卡上就跳过（同一结果文件重复回填）。
+    nRuns=0（全是测量故障）不写：那不是一次测量。tier 不写进卡——qc 每次按
+    measuredDifficulty 重算（§6.3），这里只打印派生出的级别供核对。
+    返回 (是否写入, 说明)。
+    """
+    if not entry.get("nRuns"):
+        return False, "nRuns=0（全是测量故障），不回填"
+    path = os.path.join(task.dir, "task_card.json")
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    card = json.loads(raw)
+    md = card.get("measuredDifficulty")
+    if md is None:
+        md = card["measuredDifficulty"] = []
+    if not isinstance(md, list):
+        return False, "卡上 measuredDifficulty 不是数组，拒绝改写：%s" % path
+    if entry in md:
+        return False, "完全相同的条目已在卡上，跳过"
+    md.append(entry)
+    with open(path, "w", encoding="utf-8") as f:   # 保持原文件是否带结尾换行，减少无关 diff
+        f.write(json.dumps(card, ensure_ascii=False, indent=2) + ("\n" if raw.endswith("\n") else ""))
+    task.card = card
+    ok, d = qc.difficulty_tier(task)
+    return True, "已追加到 %s（第 %d 条）；派生级别：%s%s" % (
+        path, len(md), d.get("tier") if ok else "定不出", "（%s）" % d.get("级别来源") if ok else "")
+
+
+def _write_card_selftest(task):
+    """write_card 的离线回归：在临时副本上追加、去重、拒写 nRuns=0，原卡不动。"""
+    import shutil
+    import tempfile
+    orig = open(os.path.join(task.dir, "task_card.json"), encoding="utf-8").read()
+    tmp = tempfile.mkdtemp(prefix="n7_card_")
+    try:
+        d = os.path.join(tmp, "t")
+        shutil.copytree(task.dir, d)
+        t = tasks.load_task(d)
+        n0 = len(t.card.get("measuredDifficulty") or [])
+        e = {"model": "selftest", "nRuns": 2, "fullPassRate": 0.5, "meanScore": 0.5}
+        assert write_card(t, e)[0], "首次回填应写入"
+        assert not write_card(t, dict(e))[0], "相同条目应跳过"
+        assert not write_card(t, {**e, "nRuns": 0})[0], "nRuns=0 不应写入"
+        md = tasks.load_task(d).card["measuredDifficulty"]
+        assert len(md) == n0 + 1 and md[-1] == e, "卡上应恰好多一条且内容一致"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    assert open(os.path.join(task.dir, "task_card.json"), encoding="utf-8").read() == orig, "原卡被改了"
+    print("[selftest] write_card：追加/去重/拒写 nRuns=0 正确，原卡未动", file=sys.stderr)
+
+
 def _trace_base(cfg, task, mode):
     """每次测量的轨迹目录。默认放在 N7_OUT 旁边的 `<同名>_trace/`，没给 N7_OUT 就
     放 runs/n7-trace/<task>/<model>-<mode>/。设 N7_NO_TRACE=1 关掉（省磁盘）。
@@ -118,7 +172,17 @@ def _trace_base(cfg, task, mode):
 
 def main():
     selftest = "--selftest" in sys.argv
+    write = "--write-card" in sys.argv or os.environ.get("N7_WRITE_CARD") == "1"
     cfg = PipelineConfig()
+    if "--from" in sys.argv:
+        # 补填已有结果：python3 n7_run.py --write-card --from runs/n7/x.json（不触网、不花钱）
+        i = sys.argv.index("--from")
+        if not write or i + 1 >= len(sys.argv):
+            sys.exit("用法：n7_run.py --write-card --from <N7_OUT 结果文件>")
+        with open(sys.argv[i + 1], encoding="utf-8") as f:
+            rep = json.load(f)
+        print(write_card(resolve_task(cfg, rep["task_id"]), rep["entry"])[1], file=sys.stderr)
+        return
     if selftest:
         cfg.llm.provider = "mock"   # 离线，不触网
         print("[selftest] provider=mock —— 只验证控制流，分数无意义", file=sys.stderr)
@@ -134,6 +198,10 @@ def main():
     if selftest:
         _resolve_selftest(cfg)
     task = resolve_task(cfg, os.environ.get("N7_TASK", DEFAULT_TASK))
+    if selftest:
+        _write_card_selftest(task)
+    if write and cfg.llm.provider == "mock":
+        sys.exit("--write-card 拒绝在 provider=mock 下回填：mock 分数不是测量")
     tier = os.environ.get("N7_TIER", "").strip()
     mode = os.environ.get("N7_MODE", "blind").strip()    # blind=单发盲解 / agent=多步带文件工具
     max_steps = int(os.environ.get("N7_MAX_STEPS", "20"))
@@ -256,6 +324,8 @@ def main():
     print("\nnRuns=%d(请求%d) fullPassRate=%s meanScore=%s 成本RMB=%s%s"
           % (n_ok, n_runs, full_pass, mean_score, cost.total(),
              "  ⚠️有%d次测量故障" % len(errors) if errors else ""), file=sys.stderr)
+    if write:
+        print("回填卡片：%s" % write_card(task, entry)[1], file=sys.stderr)
 
 
 if __name__ == "__main__":
