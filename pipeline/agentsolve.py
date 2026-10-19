@@ -113,11 +113,70 @@ def _protocol(tools):
 
 
 
+def _split_paths(name):
+    return [os.path.realpath(os.path.expanduser(p))
+            for p in os.environ.get(name, "").split(os.pathsep) if p.strip()]
+
+
+def _link_hops(path):
+    """解析 path 途经的每一个符号链接本身（文件或目录分量）。sandbox 逐跳解析链接，
+    只放行最终目标不够：uv 的 venv python → cpython-3.12-…（目录链接）→ 3.12.14，中间那跳读不到就 exec 失败。"""
+    hops, todo, seen = set(), [os.path.abspath(os.path.expanduser(path))], set()
+    while todo:
+        p = todo.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        parts = p.split(os.sep)
+        for i in range(2, len(parts) + 1):
+            cur = os.sep.join(parts[:i])
+            if os.path.islink(cur):
+                hops.add(cur)
+                tgt = os.path.join(os.path.dirname(cur), os.readlink(cur))
+                todo.append(os.path.normpath(os.sep.join([tgt] + parts[i:])))
+                break
+    return hops
+
+
+_RUNTIME_CACHE = {}
+
+
+def runtime():
+    """考生 run_python 的运行环境：(解释器, 只读放行目录, 追加 PATH, 环境标签)。
+
+    默认 = 产线自身解释器（10-15 起的测量口径）。造真实软件题时用：
+      ALE_RUN_PYTHON    考生解释器（如 ~/ale-runtime/py312/bin/python，带 rdkit/geopandas…）
+      ALE_RUN_SOFTWARE  额外只读放行的软件目录（os.pathsep 分隔，如 KiCad.app 所在目录）
+      ALE_RUN_PATH      追加到 PATH 的目录（如 kicad-cli 所在的 Contents/MacOS）
+      ALE_RUN_RUNTIME   环境标签，记进 measuredDifficulty.budget.runtime（换了环境就不可比）
+    放行的只有这些目录本身，家目录其余部分（任务目录的 reference/、.env）照旧读不到。"""
+    key = tuple(os.environ.get(k, "") for k in
+                ("ALE_RUN_PYTHON", "ALE_RUN_SOFTWARE", "ALE_RUN_PATH", "ALE_RUN_RUNTIME"))
+    if key in _RUNTIME_CACHE:
+        return _RUNTIME_CACHE[key]
+    py = os.path.expanduser(key[0]) if key[0] else sys.executable
+    allow = set(_split_paths("ALE_RUN_SOFTWARE")) | set(_split_paths("ALE_RUN_PATH"))
+    if key[0]:   # venv 的 prefix 与它指向的基础解释器都要放行
+        r = subprocess.run([py, "-c", "import sys;print(sys.prefix);print(sys.base_prefix)"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            raise RuntimeError("ALE_RUN_PYTHON=%s 起不来：%s" % (py, r.stderr.strip()))
+        allow |= {os.path.realpath(p) for p in r.stdout.split()}
+        allow.add(os.path.realpath(os.path.dirname(os.path.realpath(py))))
+        allow |= _link_hops(py)
+    # 默认口径的 PATH 只有 /usr/bin:/bin，不动；指定了考生解释器才把它的 bin 加进去（venv 里的 sumo 等 CLI）
+    extra = _split_paths("ALE_RUN_PATH") + ([os.path.dirname(py)] if key[0] else [])
+    res = (py, sorted(allow), extra, key[3] or None)
+    _RUNTIME_CACHE[key] = res
+    return res
+
+
 def _sandbox_profile(wd, scratch):
     """macOS sandbox-exec 规则：无网络、读不了家目录（答案在任务目录、密钥在 .env，都在 ~ 下）、
-    只能写 output/ 与草稿目录。Python 自身与用户 site-packages 放行读。"""
+    只能写 output/ 与草稿目录。Python 自身、用户 site-packages、runtime() 声明的软件目录放行读。"""
     home = os.path.realpath(os.path.expanduser("~"))
     allow_read = {os.path.realpath(p) for p in (sys.prefix, sys.base_prefix, wd)}
+    allow_read |= set(runtime()[1])
     try:
         import site
         allow_read.add(os.path.realpath(site.getusersitepackages()))
@@ -125,11 +184,21 @@ def _sandbox_profile(wd, scratch):
         pass
     allow_read.add(os.path.join(home, "Library", "Python"))
     q = lambda p: '"%s"' % p.replace("\\", "\\\\").replace('"', '\\"')  # noqa: E731
+    # 放行目录的各级父目录只给元数据（stat/lstat，不能列目录、不能读内容）：SQLite（PROJ 的 proj.db）
+    # 打开文件前会逐级 lstat 解析路径，父目录 stat 不了就报打不开
+    parents = set()
+    for p in allow_read:
+        d = os.path.dirname(p)
+        while d.startswith(home + os.sep):
+            parents.add(d)
+            d = os.path.dirname(d)
     return "\n".join([
         "(version 1)", "(allow default)", "(deny network*)",
         "(deny file-read* (subpath %s))" % q(home),
         "(allow file-read* (literal %s) %s)" % (q(home), " ".join(
             "(subpath %s)" % q(p) for p in sorted(allow_read))),
+    ] + (["(allow file-read-metadata %s)" % " ".join("(literal %s)" % q(d) for d in sorted(parents))]
+         if parents else []) + [
         "(deny file-write*)",
         '(allow file-write* (subpath %s) (subpath %s) (literal "/dev/null") (regex #"^/dev/tty"))'
         % (q(os.path.join(wd, "output")), q(scratch)),
@@ -151,9 +220,11 @@ def run_python(wd, code, tag, timeout=None, out_limit=None):
     script = os.path.join(scratch, "%s.py" % tag)
     with open(script, "w", encoding="utf-8") as f:
         f.write(code)
-    env = {"PATH": "/usr/bin:/bin", "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8",
+    py, _allow, extra_path, _tag = runtime()
+    env = {"PATH": os.pathsep.join(extra_path + ["/usr/bin", "/bin"]),
+           "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8",
            "TMPDIR": scratch, "MPLCONFIGDIR": scratch}
-    cmd = [sys.executable, "-X", "utf8", script]
+    cmd = [py, "-X", "utf8", script]
     if shutil.which("sandbox-exec"):
         prof = os.path.join(scratch, "_sandbox.sb")
         with open(prof, "w", encoding="utf-8") as f:
@@ -419,6 +490,28 @@ def _selftest():
         shutil.rmtree(wd, ignore_errors=True)
         assert "LEAK" not in obs and obs.count("blocked") == 3, obs
         print("agentsolve 自测④沙箱隔离 OK（读 ~ / 写 input / 联网 全拦）")
+
+        # ⑤ 指定考生解释器（ALE_RUN_PYTHON）后：用的是它、标签记得住，且家目录照旧读不到
+        saved = {k: os.environ.get(k) for k in ("ALE_RUN_PYTHON", "ALE_RUN_RUNTIME")}
+        os.environ["ALE_RUN_PYTHON"], os.environ["ALE_RUN_RUNTIME"] = sys.executable, "selftest-rt"
+        try:
+            assert runtime()[3] == "selftest-rt", runtime()
+            wd = tempfile.mkdtemp(prefix="ale_sbtest_")
+            os.makedirs(os.path.join(wd, "input"))
+            os.makedirs(os.path.join(wd, "output"))
+            obs, _ = run_python(wd, "\n".join([
+                "import sys; print('exe', sys.executable)",
+                "try: open(%r).read(); print('LEAK read_home')" % probe,
+                "except Exception: print('blocked read_home')"]), "rtprobe")
+            shutil.rmtree(wd, ignore_errors=True)
+            assert "LEAK" not in obs and "blocked read_home" in obs, obs
+            print("agentsolve 自测⑤考生解释器放行后 ~ 仍读不到 OK")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
     try:   # 协议噪声全程无有效动作 → 必须抛测量故障，不能冒充 0 分
         agent_solve(t, _ScriptedClient(["我先分析一下这道题……"]), max_steps=3)
