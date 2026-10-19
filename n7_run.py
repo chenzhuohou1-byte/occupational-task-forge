@@ -279,7 +279,7 @@ def main():
                    "reasoningEffort": os.environ.get("ALE_LLM_REASONING_EFFORT", "") or None,
                    # 附件单文件读取上限也是「换了就不可比」的一项（§6.4）：材料被截断过
                    # 和材料完整，对考生是两道题。不记下来，两条测量就没法对照。
-                   "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools == "python")
+                   "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools in ("python", "engine"))
                    else int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000")),
                    "wallClockMin": None},
         "scorerVersion": os.environ.get("N7_SCORER_VERSION", "1.0"),

@@ -15,6 +15,11 @@
   python（默认，toolset=agent-file-python）：上面四个 + run_python，read_file 可按 offset 分页
   file  （旧考法，toolset=agent-file-tools）：只有上面四个，保留只为与旧测量对照
 
+还有一档 engine（toolset=agent-file-engine，判分契约 §9.5）：在 python 基础上多一个
+engine_selftest 动作，让 agent 把自己造的可执行产物丢到真实引擎上跑自己写的场景（像真工程师
+那样部署自测）。**它与另两档不可比、不参与难度定级**（qc 只认 agent-file-python/-tools）——
+拿到引擎反馈再做的题，难度和盲测是两回事。隔离与红线见 pipeline.executable.selftest。
+
 为什么默认要能跑代码：ALE 的 agent 在沙箱里有完整 shell（vm_mcp_server.run_command），
 157 张任务卡里 99 张把 Python 列进 software。只给读写文件，测出来的「难」有一部分是
 「心算出错」（EDA 那条两跑 0.99 都只错在总额少加 1 元）—— 那是我们考法的负担，不是题难。
@@ -32,7 +37,8 @@ import tempfile
 
 from . import harness, qc
 
-TOOLSETS = {"python": "agent-file-python", "file": "agent-file-tools"}
+TOOLSETS = {"python": "agent-file-python", "file": "agent-file-tools",
+            "engine": "agent-file-engine"}
 # read_file 每页字符数。默认沿用 ALE_N7_INPUT_LIMIT（n7_run 记进 budget.inputLimit），
 # 保证 10-15 起的 agent-file-python 测量口径不变；ALE_N7_PAGE_CHARS 可单独覆盖。
 PAGE_CHARS = int(os.environ.get("ALE_N7_PAGE_CHARS") or os.environ.get("ALE_N7_INPUT_LIMIT") or "8000")
@@ -81,6 +87,30 @@ PROTOCOL_PY = """你在一个沙箱里完成任务。只能用下面五个动作
   脚本可以直接把交付文件写进 output/。
 - 交付文件必须严格按「交付要求」的文件名与格式；写完全部交付文件后再 finish。
 最多 %d 步，步数用完即交卷。"""
+
+
+# engine 档：python 全部动作 + engine_selftest（把候选产物丢真实引擎跑自带场景）
+PROTOCOL_ENGINE = """你在一个沙箱里完成任务。只能用下面六个动作，**每轮只回一个 JSON 对象、不要任何其它文字**：
+{"action":"list_files"}
+{"action":"read_file","path":"相对 input/ 的路径","offset":0}
+{"action":"write_file","path":"相对 output/ 的路径","content":"该文件的完整文本内容"}
+{"action":"run_python","code":"完整的 Python 3 脚本"}
+{"action":"engine_selftest","scenarios":[{"id":"...","input_variables":{...},"expected_end_event":"...","must_activities":[...],"forbidden_activities":[...],"advance_timer":false}]}
+{"action":"finish"}
+规则：
+- 工作目录下有 input/（只读）与 output/（唯一能写的交付目录）。read_file 分页，run_python 无网络、独立执行。
+- engine_selftest 把你当前 output/ 里的可执行产物部署到**真实引擎**，跑你**自己写的**场景并返回每个场景
+  pass/reasons。这像真工程师部署自测：先把结构/部署问题暴露出来。注意：
+  · 评测用的隐藏场景与标准答案你看不到，这里只跑你自己提供的场景；
+  · 每轮自测即起即删、相互隔离；自测次数与单次场景数都有上限，别把它当免费算力刷；
+  · 先确保 output/ 已写出可部署的产物，再自测。
+- 交付文件必须严格按「交付要求」的文件名与格式；写完全部交付文件、自测通过后再 finish。
+最多 %d 步，步数用完即交卷。"""
+
+
+def _protocol(tools):
+    return {"file": PROTOCOL, "python": PROTOCOL_PY, "engine": PROTOCOL_ENGINE}[tools]
+
 
 
 def _sandbox_profile(wd, scratch):
@@ -194,9 +224,17 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
     """
     if tools not in TOOLSETS:
         raise ValueError("tools 只认 %s，给的是 %r" % (list(TOOLSETS), tools))
-    py = tools == "python"
+    py = tools in ("python", "engine")   # 这两档都带 run_python 与分页读
+    eng = tools == "engine"
     wd = tempfile.mkdtemp(prefix="ale_n7agent_")
     harness.setup_env(task, wd)
+    selftest = None
+    if eng:
+        from .executable.selftest import build_selftest
+        selftest = build_selftest(task, wd)
+        if selftest is None:
+            raise ValueError("engine 工具集只对 executable_artifact + flowable 引擎的任务可用；"
+                             "本任务 evaluation 不满足，换 tools=python")
     if py:   # 分页读，材料不丢 → 不存在「截断成不可解」，附件不必再为 8000 字符压体积
         inputs, _ = qc._read_inputs(os.path.join(wd, "input"), limit=10 ** 9)
     else:
@@ -209,7 +247,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
 
     msgs = [
         {"role": "system", "content": "你是完成真实工作任务的 agent。"
-         + (PROTOCOL_PY if py else PROTOCOL) % max_steps},
+         + _protocol(tools) % max_steps},
         {"role": "user", "content": "\n".join([
             task.card.get("prompt", ""), "", "## 交付要求",
             json.dumps(task.card.get("交付要求", {}), ensure_ascii=False, indent=2),
@@ -217,7 +255,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
             "", "现在开始，回一个动作 JSON。"])},
     ]
 
-    trace, written, bad_steps, valid, py_runs = [], 0, 0, 0, 0
+    trace, written, bad_steps, valid, py_runs, eng_tests = [], 0, 0, 0, 0, 0
     try:
         for step in range(max_steps):
             res = llm.chat(msgs)
@@ -253,6 +291,10 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                     else:
                         py_runs += 1
                         obs, _changed = run_python(wd, code, "step%02d" % (step + 1))
+                elif kind == "engine_selftest" and eng:
+                    eng_tests += 1
+                    result = selftest(act.get("scenarios"))
+                    obs = "engine_selftest 结果：\n" + json.dumps(result, ensure_ascii=False, indent=2)
                 elif kind == "write_file":
                     rel = qc._safe_rel(act.get("path", ""))
                     content = act.get("content")
@@ -269,8 +311,12 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                     trace.append({"step": step + 1, "action": "finish"})
                     break
                 else:
-                    obs = ("不认识的 action=%r，只许 list_files/read_file/write_file/%sfinish。"
-                           % (kind, "run_python/" if py else ""))
+                    allowed = "list_files/read_file/write_file/"
+                    if py:
+                        allowed += "run_python/"
+                    if eng:
+                        allowed += "engine_selftest/"
+                    obs = "不认识的 action=%r，只许 %sfinish。" % (kind, allowed)
             trace.append({"step": step + 1, "action": (act or {}).get("action", "<解析失败>"),
                           "path": (act or {}).get("path"),
                           # 多页读取的轨迹不记 offset 事后没法复盘它到底读了哪一段
@@ -284,7 +330,8 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
         qc._save_trace(trace_dir, transcript=msgs, actions=trace,
                        meta={"max_steps": max_steps, "toolset": TOOLSETS[tools], "有效动作": valid,
                              "协议噪声步": bad_steps, "write次数": written,
-                             "run_python次数": py_runs, "work_dir": wd})
+                             "run_python次数": py_runs, "engine_selftest次数": eng_tests,
+                             "work_dir": wd})
 
     if valid == 0:
         raise RuntimeError("agent 档全程没解析出一个有效动作（%d 步全是协议噪声）" % bad_steps)
@@ -304,7 +351,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
     return True, {"task_id": task.task_id, "score": r.score, "passed": r.passed,
                   "写出文件数": len(_out_files(out_dir)), "toolset": TOOLSETS[tools],
                   "步数": len(trace), "write次数": written, "协议噪声步": bad_steps,
-                  "run_python次数": py_runs,
+                  "run_python次数": py_runs, "engine_selftest次数": eng_tests,
                   "trace": trace, "trace_dir": trace_dir}
 
 
@@ -409,6 +456,17 @@ def _selftest():
     assert len(obs) == 2 and [s["offset"] for s in obs] == [0, 5], obs
     print("agentsolve 自测④跨页读取 OK（offset 生效并记进轨迹：%s）"
           % [s["offset"] for s in obs])
+
+    # engine 档守门：数值型任务（非 executable_artifact）开 engine 工具集必须被拒，
+    # 免得 agent-file-engine 的非等价测量被误用到普通任务上。
+    try:
+        agent_solve(t, _ScriptedClient([json.dumps({"action": "finish"})]),
+                    max_steps=2, tools="engine")
+    except ValueError as e:
+        assert "executable_artifact" in str(e), e
+        print("agentsolve 自测⑤engine 档对非可执行任务拒绝 OK")
+    else:
+        raise AssertionError("engine 工具集居然在数值型任务上放行了")
     return True
 
 

@@ -42,7 +42,13 @@ def n6_verify(task, pass_threshold=1.0):
          测试集严格（必须非空且可定位），训练集免掉人写的溯源清单、但机器产的逐字段明细必须在
       6) 判分依据真能追到附件：material 类的 ref 指到的文件在 input 里存在（写了就得写对）
       7) 题面不泄标准答案：reference 里的数值不许出现在 prompt / 交付要求里
+
+    可执行范式（§9.5）走单独分支 `_n6_verify_executable`：夹具是 golden/negatives 而非
+    四档表格夹具；判分链路含真实工具链、判分可复现与"题面不泄答案"仍查，但不信任自报的
+    交叉核对由专属闸门承担。
     """
+    if _is_executable(task):
+        return _n6_verify_executable(task)
     checks = []
     purpose, purpose_declared = task_purpose(task)
 
@@ -131,14 +137,17 @@ def _check_reproducible(task):
 
 def n8_floor_audit(task, floor=0.0):
     """N8 地板审计（判分契约 §8）：地板＝**同结构随机假答案**，不是空解。
-
     空解得 0 只是最低门槛，挡不住「文件名/表头/行键/字段全对、数值全错」这种白拿分——
     而那恰恰是结构化表格类任务最常见的漏分口。本节跑**两条地板**、取较高分：
       ① 作者提供的 `output_test_random` 夹具（作者自证义务，判分契约 §4）
       ② **程序化合成**的同结构假答案（`pipeline/floor.py` 从 golden 机械改写）
     之所以要②：作者造的地板证不了作者自己判分器的清白。「行键列被计进分母、
     照抄题面清单白拿约一成」这个缺陷在两条数据上各出现一次、两次都靠人工发现。
+
+    可执行范式（§9.5）走 `_n8_floor_executable`：地板=伪造全通过自报 + 空交付。
     """
+    if _is_executable(task):
+        return _n8_floor_executable(task, floor)
     probes = []
 
     fx = os.path.join(task.dir, "assets", "reference", "fixtures", "output_test_random")
@@ -168,6 +177,212 @@ def n8_floor_audit(task, floor=0.0):
         detail["说明"] = "地板证据不完整：有探针没跑起来"
     else:
         detail["说明"] = "两档地板都为 0，判分器不给「格式对内容错」送分"
+    return ok, detail
+
+
+# ===== 可执行产物范式分支（executable_artifact，判分契约 §9.5）=====
+# 夹具不是四档表格，而是 golden/ 与 negatives/<name>/；判分链路跑真实工具链（引擎/容器），
+# 判分器不信任候选自报。N6 验「golden 全绿 / 判分可复现 / 每条负例被拒 / 伪造自报被交叉
+# 核对拒 / 不泄答案」；N8 地板＝「空交付」必须 0、「伪造全通过自报」必须被判负。
+# 引擎/容器不可达一律记故障（harness.evaluate 透传判分器 JSON 里的 fault），既不静默放行、
+# 也不记成 agent 做错——否则一台没起引擎的机器会把所有可执行任务误杀。
+
+
+def _is_executable(task):
+    """可执行范式判定：evaluation.type == 'executable_artifact'（§9.5）。"""
+    ev = task.card.get("evaluation") or {}
+    return str(ev.get("type", "")).strip() == "executable_artifact"
+
+
+def _exec_copy_solver(src_output):
+    """把指定目录整树拷成 output/ 的 solver 工厂（负例/伪造夹具复用，golden/neg 之外的任意产物）。"""
+    def solver(task, work_dir):
+        if not os.path.isdir(src_output):
+            raise RuntimeError("产物目录不存在: " + src_output)
+        dst = os.path.join(work_dir, "output")
+        os.makedirs(dst, exist_ok=True)
+        for root, _, files in os.walk(src_output):
+            rel = os.path.relpath(root, src_output)
+            tgt = dst if rel == "." else os.path.join(dst, rel)
+            os.makedirs(tgt, exist_ok=True)
+            for fn in sorted(files):
+                shutil.copy(os.path.join(root, fn), os.path.join(tgt, fn))
+    solver.__name__ = "exec_copy_solver"
+    return solver
+
+
+def _list_negatives(task):
+    """负例清单：优先读 negatives/manifest.json（带 faked_results / target_check 标记），
+    无清单时退回扫目录（faked 一律当 False，反信任自报闸门会因此报缺）。"""
+    negdir = os.path.join(task.dir, "assets", "reference", "negatives")
+    if not os.path.isdir(negdir):
+        return []
+    manifest = os.path.join(negdir, "manifest.json")
+    if os.path.isfile(manifest):
+        try:
+            rows = json.load(open(manifest, encoding="utf-8"))
+            out = [{"name": r["name"], "faked": bool(r.get("faked_results")),
+                    "target": r.get("target_check", ""), "floor": r.get("floor") is True}
+                   for r in rows if isinstance(r, dict) and r.get("name")]
+            if out:
+                return out
+        except (ValueError, OSError, KeyError):
+            pass
+    return [{"name": n, "faked": False, "target": "", "floor": False}
+            for n in sorted(os.listdir(negdir))
+            if os.path.isdir(os.path.join(negdir, n, "output"))]
+
+
+def _eval_all_negatives(task):
+    """跑每一条负例，确认都被判负（passed=False）；并挑出「伪造自报」负例是否因自报与
+    引擎实算不一致被拒（runner 的 self_report_matches_engine 检查未过 → 名字进 errors）。
+    返回 (明细 list, 全部被拒?, 存在被交叉核对拒的伪造自报负例?)。
+    任一条遇引擎故障 → all_rejected 置 False 并带 fault 明细（调用方据此记故障）。
+    """
+    negs = _list_negatives(task)
+    negdir = os.path.join(task.dir, "assets", "reference", "negatives")
+    detail, all_rejected, selfreport_rejected, fault = [], True, False, ""
+    if not negs:
+        return ([{"说明": "无负例目录——可执行任务须至少给结构缺陷负例 + 伪造自报负例"}],
+                False, False)
+    for n in negs:
+        src = os.path.join(negdir, n["name"], "output")
+        try:
+            r = harness.run_task(task, solver=_exec_copy_solver(src))
+        except Exception as exc:
+            all_rejected = False
+            detail.append({"neg": n["name"], "fault": str(exc)})
+            continue
+        if r.fault:
+            fault = fault or r.fault
+            all_rejected = False
+            detail.append({"neg": n["name"], "fault": r.fault[:200]})
+            continue
+        rejected = not r.passed
+        target_hit = not n["target"] or n["target"] in r.errors
+        all_rejected = all_rejected and rejected and target_hit
+        by_crosscheck = "self_report_matches_engine" in (r.errors or [])
+        if n["faked"] and rejected and by_crosscheck:
+            selfreport_rejected = True
+        detail.append({"neg": n["name"], "被判负": rejected, "score": r.score,
+                       "伪造自报": n["faked"],
+                       "因自报不一致被拒": (by_crosscheck if n["faked"] else None),
+                       "target_check": n["target"]})
+    if fault:
+        detail.append({"说明": "有负例遇引擎/工具链故障，本节判不了：" + fault[:200]})
+    return detail, all_rejected, selfreport_rejected
+
+
+def _n6_verify_executable(task):
+    """N6 可执行范式分支（§9.5）。夹具是 golden/negatives，判分链路跑真实工具链：
+      1) golden 实测 == 1.0 且 passed（参考交付能在真实引擎上全绿）
+      2) 判分可复现：golden 判两次分数一致（引擎对确定产物给确定结果）
+      3) 每条 negatives/<name>/ 都被判负（结构缺陷/错误裁决不许蒙混过关）
+      4) 反信任自报（仅当 evaluation.selfReportCrossCheck 开）：至少一条「伪造自报」
+         负例因自报与引擎实算不一致被独立拒绝
+      5) 数据已填（无 TODO 占位）
+      6) 题面不泄标准答案（与数值范式同一道闸门）
+    引擎/容器不可达 → 本节判不了，记故障（既不静默放行、也不记成做错）。
+    """
+    ev = task.card.get("evaluation") or {}
+    checks = []
+
+    try:
+        g1 = harness.run_task(task, solver=harness.golden_solver)
+        g2 = harness.run_task(task, solver=harness.golden_solver)
+    except Exception as e:  # noqa: BLE001 golden 跑不起来＝任务骨架坏了，直接不通过
+        return False, {"task_id": task.task_id, "范式": "executable",
+                       "fault": "golden 跑不起来：%s" % e}
+    if g1.fault or g2.fault:
+        return False, {"task_id": task.task_id, "范式": "executable",
+                       "fault": "引擎/工具链不可达，N6 判不了：" + (g1.fault or g2.fault)[:300]}
+
+    g_ok = abs(g1.score - 1.0) < 1e-9 and g1.passed
+    checks.append({"检查": "golden 实测==1.0 且 passed", "通过": g_ok,
+                   "明细": {"score": g1.score, "passed": g1.passed, "errors": g1.errors[:5]}})
+
+    repro_ok = abs(g1.score - g2.score) < 1e-9
+    checks.append({"检查": "判分可复现(golden 判两次一致)", "通过": repro_ok,
+                   "明细": {"score": [g1.score, g2.score]}})
+
+    neg_detail, neg_ok, selfreport_rejected = _eval_all_negatives(task)
+    checks.append({"检查": "每条负例都被判负", "通过": neg_ok, "明细": neg_detail})
+
+    if ev.get("selfReportCrossCheck"):
+        checks.append({"检查": "反信任自报(≥1 伪造自报负例被交叉核对拒)",
+                       "通过": selfreport_rejected,
+                       "说明": ("伪造自报负例被引擎独立重算拒绝（判分器不吃自报）"
+                                if selfreport_rejected else
+                                "selfReportCrossCheck 已开，但没有任何伪造自报负例因自报与"
+                                "引擎不一致被拒——缺 neg(faked_results=true) 或交叉核对未生效")})
+
+    ind_ok, ind_detail = _check_independence(task)
+    checks.append({"检查": "判分器独立", "通过": ind_ok, "明细": ind_detail})
+    purpose, _ = task_purpose(task)
+    basis = task.card.get("scoringBasis") or []
+    if purpose == "训练集" and not basis:
+        basis_ok, basis_detail = bool(g1.details), "训练集必须有机器判分明细"
+    else:
+        basis_ok, basis_detail = _check_basis_traceable(task)
+    checks.append({"检查": "判分依据可溯源", "通过": basis_ok, "明细": basis_detail})
+    ready = not _has_placeholder(os.path.join(task.dir, "assets"))
+    checks.append({"检查": "数据已填(无 TODO 占位)", "通过": ready})
+
+    lk_ok, lk_detail = _check_no_answer_leak(task)
+    checks.append({"检查": "题面不泄标准答案", "通过": lk_ok, "明细": lk_detail})
+
+    ok = all(c["通过"] for c in checks)
+    return ok, {"task_id": task.task_id, "范式": "executable",
+                "用途": task_purpose(task)[0], "checks": checks}
+
+
+def _n8_floor_executable(task, floor=0.0):
+    """N8 可执行范式地板：degenerate 答案必须拿不到分。两条地板按各自语义判：
+      ① 空交付（output/ 空）——必触发 deliverables_present 硬闸门，score 必须 <= floor
+      ② 伪造全通过自报（取 faked_results 负例）——自报全绿但引擎实算不认，必须被判负
+         （passed=False；它的 score 可以是部分分，因为别的检查真过了，但绝不能 passed）
+    两条都要「被正确否决」N8 才过；任一条漏（空交付非 0 / 伪造自报蒙混成 passed）＝判分器漏。
+    """
+    probes = []   # (kind, score, 本档是否被正确否决, fault)
+
+    try:
+        r0 = harness.run_task(task, solver=harness.empty_solver)
+        probes.append(("空交付", r0.score,
+                       (not r0.fault) and r0.score <= floor, r0.fault))
+    except Exception as e:  # noqa: BLE001 空交付跑不起来要显式记下，不静默跳过
+        probes.append(("空交付(未能运行:%s)" % type(e).__name__, None, False, ""))
+
+    crosscheck = bool((task.card.get("evaluation") or {}).get("selfReportCrossCheck"))
+    marker = "faked" if crosscheck else "floor"
+    label = "伪造全通过自报" if crosscheck else "结构合法的常量/空结果程序"
+    fixture = next((n for n in _list_negatives(task) if n.get(marker)), None)
+    if fixture:
+        src = os.path.join(task.reference_dir, "negatives", fixture["name"], "output")
+        try:
+            rf = harness.run_task(task, solver=_exec_copy_solver(src))
+            rejected = not rf.fault and not rf.passed
+            if crosscheck:
+                rejected = rejected and "self_report_matches_engine" in rf.errors
+            else:
+                rejected = rejected and rf.score <= floor
+            probes.append((label + "(%s)" % fixture["name"], rf.score, rejected, rf.fault))
+        except Exception as exc:
+            probes.append((label, None, False, str(exc)))
+    else:
+        probes.append((label + "(缺夹具，证据不完整)", None, False, ""))
+
+    faults = [(k, f) for k, _, _, f in probes if f]
+    if faults:
+        return False, {"task_id": task.task_id, "范式": "executable",
+                       "fault": "引擎/工具链不可达，地板判不了：%s" % faults[0][1][:300],
+                       "各档地板": {k: s for k, s, _, _ in probes}}
+    ok = all(good for _, _, good, _ in probes)
+    detail = {"task_id": task.task_id, "范式": "executable", "通过": ok,
+              "各档地板": {k: {"score": s, "被正确否决": good}
+                           for k, s, good, _ in probes}}
+    bad = [k for k, _, good, _ in probes if not good]
+    detail["说明"] = ("空交付=0 且伪造全通过自报被判负：判分器不吃自报、不给空交付送分"
+                      if ok else "地板未被正确否决（判分器送分或证据不完整）：%s" % bad)
     return ok, detail
 
 

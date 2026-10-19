@@ -37,7 +37,7 @@ def _run(label, args, env=None):
 
 def check_demo_qc():
     """对 _demo 跑 qc，逐项核对闸门行为（而不是只看一个总布尔）。"""
-    env = {"ALE_TASKS_DIR": os.path.join(ROOT, "tasks"),
+    env = {"ALE_TASKS_DIR": os.path.join(ROOT, "tasks", "_demo"),
            "ALE_RUNS_DIR": os.path.join(ROOT, ".ci-runs")}
     ok, r = _run("qc 跑通 tasks/_demo", ["-m", "pipeline.cli", "qc", "--all"], env)
     if not ok:
@@ -79,6 +79,8 @@ def main():
               "ALE_RUNS_DIR": os.path.join(ROOT, ".ci-runs"),
               "N7_TASK": "demo-procurement-tally-001"})[0],
         _run("难度分级/用途闸门自测", ["tests/test_gates.py"])[0],
+        _run("可执行范式自测", ["tests/test_executable.py"],
+             {"ALE_TASKS_DIR": os.path.join(ROOT, "tasks")})[0],
         check_demo_qc(),
     ]
     n_ok = sum(1 for x in results if x)
