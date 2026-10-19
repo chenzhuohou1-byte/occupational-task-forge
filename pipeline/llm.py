@@ -81,6 +81,13 @@ class OpenAICompatClient(LLMClient):
         effort = os.environ.get("ALE_LLM_REASONING_EFFORT", "").strip()
         if effort:
             payload["reasoning_effort"] = effort
+        # 流式（默认开）：网关对非流式请求约 5 分钟无响应就 504，长输出（casegen 写代码 32000 token、
+        # 推理档 agent 单步）稳定撞上；流式边生成边回包，连接不空闲就不超时（10-19 实测：
+        # 非流式 Sonnet 5.5 写代码 3 次全 504，流式 5000 token 64s 正常收完）。ALE_LLM_STREAM=0 关掉。
+        stream = os.environ.get("ALE_LLM_STREAM", "1") != "0"
+        if stream:
+            payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             self.cfg.api_base.rstrip("/") + "/chat/completions", data=body,
@@ -96,8 +103,7 @@ class OpenAICompatClient(LLMClient):
         for i in range(attempts):
             try:
                 with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
-
-                    data = json.loads(r.read())
+                    data = _read_stream(r) if stream else json.loads(r.read())
                 # 网关偶发回 200 但 choices 为 null（错误信封，如上游超时）：当瞬时故障重试，
                 # 而不是让 `None[0]` 抛 TypeError 绕过重试（实测 ward 那条一个槽位连挂三次）
                 if not (isinstance(data, dict) and data.get("choices")):
@@ -112,7 +118,7 @@ class OpenAICompatClient(LLMClient):
                     model=data.get("model", self.cfg.model),
                     finish_reason=choice.get("finish_reason", ""),
                     reasoning_tokens=detail.get("reasoning_tokens", 0))
-            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError, ValueError) as e:
                 last = e
                 if i < attempts - 1:
                     wait = 1.5 * (i + 1)
@@ -122,6 +128,32 @@ class OpenAICompatClient(LLMClient):
                         wait = float(ra) if (ra and ra.isdigit()) else min(60.0, 8.0 * (2 ** i))
                     time.sleep(wait)
         raise RuntimeError("网关请求失败（重试 %d 次仍失败）：%s" % (attempts, last))
+
+
+def _read_stream(resp):
+    """把 SSE 流（data: {...} 行）拼回非流式响应的形状，下游解析不用改。"""
+    text, fin, usage, model, n = [], "", {}, "", 0
+    for raw in resp:
+        line = raw.decode("utf-8", "ignore").strip()
+        if not line.startswith("data:"):
+            continue
+        d = line[5:].strip()
+        if d == "[DONE]":
+            break
+        j = json.loads(d)
+        if j.get("error"):
+            raise ConnectionError("网关流内报错：%s" % json.dumps(j["error"], ensure_ascii=False)[:300])
+        n += 1
+        model = j.get("model") or model
+        if j.get("usage"):
+            usage = j["usage"]
+        for c in j.get("choices") or []:
+            text.append((c.get("delta") or {}).get("content") or "")
+            fin = c.get("finish_reason") or fin
+    if not n:
+        raise ConnectionError("网关流式响应为空")
+    return {"model": model, "usage": usage,
+            "choices": [{"message": {"content": "".join(text)}, "finish_reason": fin}]}
 
 
 def get_client(cfg):
