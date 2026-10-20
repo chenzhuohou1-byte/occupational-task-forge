@@ -399,51 +399,53 @@ def refs_trace_check(case_dir):
 
 
 def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, subdomain=None):
-    """返回 (stage, problem, info)；problem 为 None 表示本轮全过。"""
-    err = smoke(case_dir)
-    if err:
-        return "smoke", "冒烟失败：\n" + err, None
-    err = refs_trace_check(case_dir)      # 给了参考资料才设此门
+    """返回 (stage, problem, info)；problem 为 None 表示本轮全过。
+
+    冒烟 / 难度门 / crosscheck / 渲染**全部在 casegen 的沙箱 worker 子进程里跑**（模型写的
+    参数生成器/solve/solve2/物化 不进本进程、读不到 .env、不能联网）。本函数只按 worker 回传的
+    stage 分流，ok 之后做宿主侧可信落盘（refs 静态门 → 物化 → qc）。
+    注：refs 门从「smoke 之后」挪到「worker ok 之后、物化之前」——它是纯静态文件校验、不碰模型代码，
+    移位只改双重损坏案例里先报哪条返修线索（good 案例无参考资料，自测不受影响）。
+    """
+    try:
+        p = casegen._invoke_worker(case_dir, "gate", seed=seed, n=n, hardness=hardness)
+    except RuntimeError as e:
+        return "worker", "生题沙箱未就绪（拒绝裸跑模型代码）：%s" % e, None
+    stage = p.get("stage")
+    if stage == "smoke":
+        return "smoke", "冒烟失败：\n" + p.get("error", ""), None
+    if stage == "hardness":
+        return "hardness", "结构性难度不达标（题太软，便宜模型会一眼做完）：\n- " + "\n- ".join(p["probs"]), None
+    if stage == "crosscheck":
+        if "error" in p:
+            return "crosscheck", "crosscheck 拒收：%s" % p["error"], None
+        return "crosscheck", "两份独立实现对不上，或一致性断言被破坏：\n" + json.dumps(
+            p.get("report", {}), ensure_ascii=False, indent=1, default=str)[:4000], None
+    if stage != "ok":
+        return "worker", "生题 worker 异常/未知 stage=%r：\n%s" % (
+            stage, (p.get("error", "") or "")[:4000]), None
+    err = refs_trace_check(case_dir)      # 给了参考资料才设此门（静态、宿主侧）
     if err:
         return "refs", err, None
-    gate_on = any(getattr(hardness, f.name) for f in dataclasses.fields(hardness) if f.name != "sample")
-    world = None
     try:
-        if gate_on:
-            world = choose_instance(case_dir, hardness, seed)   # 框架挑 INSTANCE，物化与难度门共用
-        probs = hardness_check(case_dir, hardness, seed, world=world)
-    except Exception:  # noqa: BLE001 TRAPS/渲染抛错也是返修线索
-        probs = ["难度门检查出错：\n" + traceback.format_exc(limit=6)]
-    if probs:
-        return "hardness", "结构性难度不达标（题太软，便宜模型会一眼做完）：\n- " + "\n- ".join(probs), None
-    try:
-        rep = crosscheck.crosscheck(case_dir, n=n, seed=seed)
-    except crosscheck.CaseError as e:
-        return "crosscheck", "crosscheck 拒收：%s" % e, None
-    if not rep["一致"]:
-        return "crosscheck", "两份独立实现对不上，或一致性断言被破坏：\n" + json.dumps(
-            {k: rep[k] for k in ("不一致数", "断言破坏数", "第一个反例", "第一个断言破坏")},
-            ensure_ascii=False, indent=1, default=str)[:4000], None
-    try:
-        mat = casegen.materialize(case_dir, os.path.join(out_dir, "tasks_r%d" % rnd),
-                                  subdomain=subdomain, instance=world)
+        mat = casegen._materialize_from_payload(p, os.path.join(out_dir, "tasks_r%d" % rnd),
+                                                subdomain=subdomain)
     except casegen.FixtureMismatch as e:
-        # 负例/地板不符 → 判分器或地板合成器的锅（框架侧），返修案例没用；正例/部分分不符 → 案例侧
+        # 负例/地板不符 → 判分器或地板合成器的锅（框架侧）；正例/部分分不符 → 案例侧
         return ("framework" if e.framework_side else "materialize"), "%s\n逐字段线索：\n%s" % (
             e, json.dumps(e.info, ensure_ascii=False, indent=1, default=str)[:3500]), None
-    except Exception:  # noqa: BLE001 物化失败（渲染出错等）也是返修线索
+    except Exception:  # noqa: BLE001 物化失败也是返修线索
         return "materialize", "物化失败：\n" + traceback.format_exc(limit=6), None
     t = tasks.load_task(mat["dir"])
     n6_ok, n6 = qc.n6_verify(t)
     n8_ok, n8 = qc.n8_floor_audit(t)
     if not (n6_ok and n8_ok):
-        # N6 不过（泄答案/依据追不到附件…）是案例侧；只有 N8 地板不过 → 框架侧
         stage = "qc" if not n6_ok else "framework"
         return stage, "qc 不过：\n" + json.dumps(
             {"N6不过项": [c for c in n6["checks"] if not c["通过"]], "N8": n8},
             ensure_ascii=False, indent=1, default=str)[:4000], None
     return "pass", None, {"task_dir": mat["dir"], "fixtureScores": mat["fixtureScores"],
-                          "crosscheck世界数": rep["世界数"], "后续测题计划": n7_commands(mat["dir"])}
+                          "crosscheck世界数": p.get("crosscheck世界数"), "后续测题计划": n7_commands(mat["dir"])}
 
 
 def n7_commands(task_dir):

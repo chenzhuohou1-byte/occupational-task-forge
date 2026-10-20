@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 
-from . import floor, harness, scaffold, subdomains, tasks
+from . import floor, harness, sandbox, scaffold, subdomains, tasks
 
 
 def _load(path, name):
@@ -189,16 +189,29 @@ def _sidecar(task, subdomain_label):
     return side
 
 
-def materialize(case_dir, out_root, seed=0, subdomain=None, instance=None):
-    物化 = _load(os.path.join(case_dir, "物化.py"), "_cg_mat")
-    solve_mod = _load(os.path.join(case_dir, "solve.py"), "_cg_solve")
-    # 优先用调用方（难度门）挑好的世界；否则 物化.INSTANCE；再否则生成器第一个世界
-    world = instance if instance is not None else getattr(物化, "INSTANCE", None)
-    if world is None:
-        gen = _load(os.path.join(case_dir, "参数生成器.py"), "_cg_gen")
-        world = gen.worlds(1, seed)[0]
-    task = 物化.TASK
+def _invoke_worker(case_dir, mode, seed=0, n=200, hardness=None):
+    """在沙箱子进程里跑 casegen_worker，取回判定/渲染 payload（模型代码不进本进程）。"""
+    argv = ["-m", "pipeline.casegen_worker", os.path.abspath(case_dir),
+            "--mode", mode, "--seed", str(seed), "--n", str(n)]
+    if hardness is not None:
+        import dataclasses
+        argv += ["--hardness-json", json.dumps(dataclasses.asdict(hardness))]
+    return sandbox.run_worker(argv, read_dirs=[os.path.abspath(case_dir)])
 
+
+def materialize(case_dir, out_root, seed=0, subdomain=None):
+    """把一个已过 crosscheck 的案例物化成任务。模型代码（solve/物化）在沙箱 worker 里跑，
+    本函数只拿回渲染文本 + 计数做可信落盘。"""
+    p = _invoke_worker(case_dir, "render", seed=seed)
+    if p.get("stage") != "ok":
+        raise RuntimeError("物化 worker 未就绪：%s" % (p.get("error") or p))
+    return _materialize_from_payload(p, out_root, subdomain)
+
+
+def _materialize_from_payload(payload, out_root, subdomain=None):
+    """宿主侧可信半段：scaffold → 写 input/expected → 四档夹具 → 回填 card → sidecar。
+    不 import 任何模型代码，只消费 worker 回传的 task/inputs/expected/rules_md/meta。"""
+    task = payload["task"]
     # 领域/子域/taxonomy 以 ALE 码表为准，不采信模型自己写的 TASK["领域"]
     tx, domain, sub = {}, task["领域"], task.get("子域", "")
     if subdomain:
@@ -209,8 +222,7 @@ def materialize(case_dir, out_root, seed=0, subdomain=None, instance=None):
     spec = {"领域": domain, "任务名": task["任务名"], "task_id": task["task_id"],
             "子域": sub, "taxonomy": tx, "prompt": task["prompt"],
             "交付要求": task["交付要求"],
-            # §3 材料来源：casegen 物化出来的一律是 A 类闭世界、产线自动造。这里直接写死，
-            # 因为这条路径的来源是确定的；B 类真实源题由作者在卡上自行声明。
+            # §3 材料来源：casegen 物化出来的一律是 A 类闭世界、产线自动造。
             "材料来源": {"class": "synthetic", "生成方式": "pipeline_auto",
                      "note": "casegen 闭世界程序化生成（参数生成器 + solve/solve2 双实现交叉复算）"},
             "元数据": {"机器规格": "2C4G", "超时秒": 1800, "判分构成": "纯代码",
@@ -219,19 +231,19 @@ def materialize(case_dir, out_root, seed=0, subdomain=None, instance=None):
     task_dir = res["dir"]
     assets = os.path.join(task_dir, "assets")
 
-    # 真实 input：渲染世界参数 + 拷入规则.md（判分依据的出处）
+    # 真实 input：worker 渲染好的附件 + 规则.md（判分依据的出处）
     indir = os.path.join(assets, "input")
     _clear_dir(indir)
-    for rel, text in 物化.render_inputs(world).items():
+    for rel, text in payload["inputs"].items():
         with open(os.path.join(indir, rel), "w", encoding="utf-8") as f:
             f.write(text)
-    shutil.copy(os.path.join(case_dir, "规则.md"), os.path.join(indir, "核算规则.md"))
+    with open(os.path.join(indir, "核算规则.md"), "w", encoding="utf-8") as f:
+        f.write(payload.get("rules_md", ""))
 
-    # 真实 expected：solve 复算（绝不手抄）
+    # 真实 expected：worker 侧 solve 复算好的交付（绝不手抄）
     expdir = os.path.join(assets, "reference", "expected")
     _clear_dir(expdir)
-    answer = solve_mod.solve(dict(world))
-    for fn, text in 物化.deliver(answer).items():
+    for fn, text in payload["expected"].items():
         with open(os.path.join(expdir, fn), "w", encoding="utf-8") as f:
             f.write(text)
 
@@ -264,10 +276,11 @@ def materialize(case_dir, out_root, seed=0, subdomain=None, instance=None):
         if name in obs:
             fs[name] = {"expected": round(obs[name], 4), "observed": round(obs[name], 4)}
     card["scoringBasis"] = task["scoringBasis"]
+    meta = payload.get("meta") or {}
     card["priorComplexity"] = {
-        "steps": len(world.get("明细", [])) * 3, "inputDocs": len(os.listdir(indir)), "crossDocJoins": 1,
-        "plantedTraps": len(getattr(物化, "TRAPS", None) or {}) or 2, "hardStops": 0,
-        "outputFields": len(answer.get("明细结果", [])) * 2 + 3,
+        "steps": meta.get("明细数", 0) * 3, "inputDocs": len(os.listdir(indir)), "crossDocJoins": 1,
+        "plantedTraps": meta.get("陷阱类数", 0) or 2, "hardStops": 0,
+        "outputFields": meta.get("输出字段数", 0) * 2 + 3,
         "conventionRulings": len(task["scoringBasis"]),
         "说明": "程序化物化自动填的可数项；难度非先验，须 N7 实测（§6.1）。"}
     with open(card_path, "w", encoding="utf-8") as f:
