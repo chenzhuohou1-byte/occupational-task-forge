@@ -24,7 +24,7 @@ VM 侧脚本通过 stdout JSON 通信、绝不写 `output/`。
 ```bash
 python3 -m pipeline.cli list                          # 列出所有任务
 python3 -m pipeline.cli run <任务目录> --solver golden  # 跑标准解，应得 1.0
-python3 -m pipeline.cli qc --all                      # 进库校验（N6 + N8）
+python3 -m pipeline.cli qc --all                      # 进库校验（N6 + N8 + 难度分级）
 python3 -m pipeline.server                            # Web 控制台 → 127.0.0.1:8765
 ```
 
@@ -61,6 +61,19 @@ N1 选材 → N2a 事实核查(证据链+机械校验) / N2b 口径裁定 → N3
 真实价格决定，答案在模型之外 —— 模型能生成一个完全自洽的错误数字而无法自纠。
 所以 N2a/N2b 把「查得到的」和「查不到的」分开，前者自动化并强制留证据链，后者交给人。
 
+## 两种判分范式
+
+以上八节点是**数值/表格范式**（`evaluation.type = numeric_tabular`）：交付一组数，判分 = 逐字段
+比对 + 硬闸门，夹具是下面的四档表格。
+
+另有**可执行产物范式**（`executable_artifact`，契约 §9.5）：agent 交付**能跑的工程产物**
+（BPMN 流程定义、脚本、服务），判分器在**宿主侧的真实工具链**上部署执行它、从运行状态
+**独立重算**结论，**不信任候选自报**。参考实现：G1（真实 Flowable 引擎执行 + 文档交叉验收）、
+E1 / H3（容器 `--network none` 跑交付脚本）。这类题的夹具不是四档表格，而是
+`assets/reference/golden/output/`（判 1.0）+ `assets/reference/negatives/<name>/`（每条被判负）
++ `manifest.json`（标 `target_check` / `faked_results` / `floor`）。难度梯度来自真实工具链的严格
+求值（G1 便宜档卡部署、前沿档卡文档一致性），是静态数据题给不出的。
+
 ## 三条最值得抄的设计
 
 **1. 闸门与部分分的分界**
@@ -96,17 +109,33 @@ N1 选材 → N2a 事实核查(证据链+机械校验) / N2b 口径裁定 → N3
 联网核查会长出一种新失败模式 —— **幻觉引用**（域名、标准号都像真的，原文没这句），
 比编错数字更危险，必须机械挡，不能靠人抽查。
 
-## 难度：只能事后测
+## 两个强制口径字段：用途 / 材料来源
 
-ALE 的 165 张任务卡里**没有任何 `difficulty` / `tier` 字段** —— 它的三层是按实测通过率
-事后切的。所以本项目禁止手写 `L1-基础` 这类标签，难度拆成两个字段：
+- `用途`：`训练集` / `测试集`，决定 `scoringBasis` 那道闸门的松紧（测试集严：非空+可定位；
+  训练集可留空但机器产的逐字段明细必须在）。**缺省按测试集严判** —— 放宽必须显式声明。
+- `材料来源`（两轴）：`class ∈ real_public / real_derived / synthetic` ×
+  `生成方式 ∈ pipeline_auto / handmade`。真实源（`real_public`/`real_derived`）必须带
+  `dataset` / `license` / `抓取日期` / `doi` 或 `url`，逐文件 url+bytes+sha256 冻进
+  `assets/input/provenance.json`；`real_derived` 还要 `synthetic_overlays` 标明哪部分是构造的。
+  这是「B 类真实源为主力」可被度量的基础（`qc` 按 `材料来源` 出分组统计）；**未声明只记账、不阻断**。
 
-- `priorComplexity` —— 先验复杂度，全是客观计数（步数/文档数/跨文档关联数/埋点数/输出字段数）
+## 难度：只能事后测，是标签不是门槛
+
+ALE 的任务卡里**没有任何 `difficulty` 字段** —— 它的难度是按实测通过率事后切的。本项目禁止
+手写 `L1-基础` 这类标签，难度拆成两个字段：
+
+- `priorComplexity` —— 先验复杂度，全是客观计数（步数/文档数/跨文档关联数/埋点数/输出字段数），**不是难度**。
 - `measuredDifficulty[]` —— 实测难度，每条必须同时钉住 **model / toolset / budget /
   scorerVersion / nRuns**。缺任一项的测量结果不算数。
 
-入库门槛：**便宜档模型 3 次 `fullPassRate` 必须 = 0**；前沿档 ≤ 1/3。
-廉价模型能满分的任务没有区分度，直接退回。
+**难度是标签 `tier`（L1–L4），不再是准入门槛（2026-10-14 改口径）。** 目标是 ALE 高仿训练+测试集，
+正需要 L1/L2，所以不再「便宜档能满分就退回」。`tier` 由 `measuredDifficulty` 机器派生、不许手写：
+
+- 便宜档满分率 ≥ 2/3 → **L1**；
+- 便宜档 0 分时，前沿档满分率 >30% → **L2** / 10–30% → **L3** / ≤10% → **L4**（前沿档需 ≥10 跑）；
+- 0 < 便宜档 < 2/3 或缺前沿档 → 推定级（`L2`/`L3+`），记「需补跑」。
+
+**进库 = N6 ∧ N8 ∧ 难度定得出级。** 「未测」仍不进库 —— 未测不是 L1，水题也得测出来才算水题。
 
 ## 数据不在这个仓库里
 
@@ -120,6 +149,18 @@ export ALE_RUNS_DIR=/path/to/private/runs
 
 网关价目表（含结算倍率）同理放在不入库的 `pipeline/pricing.local.json`，
 缺这个文件时产线照常跑、所有模型记为「未计价」，不静默按 0。
+
+## 不可信代码一律进沙箱
+
+产线有两处会执行**不可信代码**，都强制隔离，没沙箱就**拒跑**（不裸奔）：
+
+- **N7 测评**（agent 的 `run_python`）与**生题**（casegen 里模型写的 参数生成器/solve/solve2/物化）
+  → macOS `sandbox-exec` 子进程：无网络、读不了 `~`（含仓根 `.env`）、只许写工作目录。
+- **可执行范式判分**：候选产物在容器里跑（非 root UID 65534、`--network none`、`--read-only`、
+  `--cap-drop ALL`、标准答案不进候选挂载点）；给不可信 agent 的引擎自测起**一次性 Flowable+PG
+  沙箱**（独立网络/卷/口令），用完 `compose down -v` 销毁。
+
+离线/CI 的**可信**自测可用环境变量显式放行（如 `ALE_CASEGEN_UNSANDBOXED=1`），仅限可信夹具。
 
 > **样例任务**：`tasks/_demo/采购清单核算/` 是一条纯合成的玩具任务，clone 下来直接
 > `python3 -m pipeline.cli qc --all` 就能看到它过五道校验（仅演示契约与一条数据的物理形态，**不是有效数据**）。
