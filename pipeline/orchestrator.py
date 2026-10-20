@@ -66,7 +66,9 @@ def qc_batch(tasks, cfg, run_id=None):
         n6_ok, n6 = qc.n6_verify(task, cfg.pass_threshold)
         n8_ok, n8 = qc.n8_floor_audit(task, cfg.floor)
         d_ok, d = qc.difficulty_tier(task)
+        src, gen, _ = qc.task_source(task)
         return {"task_id": task.task_id, "用途": n6.get("用途"),
+                "材料来源": src, "生成方式": gen or "未声明",
                 "tier": d.get("tier"), "级别来源": d.get("级别来源"),
                 "N6通过": n6_ok, "N8通过": n8_ok, "难度可判定": d_ok,
                 "进库": n6_ok and n8_ok and d_ok,
@@ -86,8 +88,18 @@ def qc_batch(tasks, cfg, run_id=None):
     for r in rows:
         if r.get("进库"):
             tiers[r.get("tier") or "未定级"] = tiers.get(r.get("tier") or "未定级", 0) + 1
+    # 按材料来源分组（§3，2026-10-20）：「B 类真实源为主力」要可度量，不然改完生成约束
+    # 跑基线也分不清那几条是 A 类还是 B 类出的。全库与可进库两份都给。
+    src_all, src_in = {}, {}
+    for r in rows:
+        k = "%s/%s" % (r.get("材料来源") or "未声明", r.get("生成方式") or "未声明")
+        src_all[k] = src_all.get(k, 0) + 1
+        if r.get("进库"):
+            src_in[k] = src_in.get(k, 0) + 1
     summary = {"run_id": run_id, "任务数": len(tasks), "可进库": passed,
-               "可进库分级": dict(sorted(tiers.items())), "结果": rows}
+               "可进库分级": dict(sorted(tiers.items())),
+               "按材料来源": dict(sorted(src_all.items())),
+               "可进库按材料来源": dict(sorted(src_in.items())), "结果": rows}
     _dump(cfg, run_id, "qc.json", summary)
     return summary
 
