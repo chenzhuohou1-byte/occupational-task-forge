@@ -209,6 +209,10 @@ def materialize(case_dir, out_root, seed=0, subdomain=None, instance=None):
     spec = {"领域": domain, "任务名": task["任务名"], "task_id": task["task_id"],
             "子域": sub, "taxonomy": tx, "prompt": task["prompt"],
             "交付要求": task["交付要求"],
+            # §3 材料来源：casegen 物化出来的一律是 A 类闭世界、产线自动造。这里直接写死，
+            # 因为这条路径的来源是确定的；B 类真实源题由作者在卡上自行声明。
+            "材料来源": {"class": "synthetic", "生成方式": "pipeline_auto",
+                     "note": "casegen 闭世界程序化生成（参数生成器 + solve/solve2 双实现交叉复算）"},
             "元数据": {"机器规格": "2C4G", "超时秒": 1800, "判分构成": "纯代码",
                      "schema": "判分契约 v1.0", "生成方式": "程序化生成"}}
     res = scaffold.scaffold_task(spec, out_root)

@@ -176,13 +176,59 @@ def test_majority_repro():
         qc.harness.setup_env, qc.harness.golden_solver, qc.harness.evaluate = orig
 
 
+def test_source():
+    """§3 材料来源两轴：不猜、已声明严查、未声明只记账不阻断、兼容早期键名。"""
+    print("\n[材料来源]")
+    # 未声明（无字段 / 非 dict / 枚举非法）一律记 未声明，且**本项不阻断**
+    for bad in ({}, {"材料来源": "B类"}, {"材料来源": {"class": "B"}}):
+        src, gen, declared = qc.task_source(FakeTask(bad))
+        check((src, gen, declared) == ("未声明", "", False), "未声明不猜：%r → 未声明" % (bad,))
+        ok, _ = qc._check_source_evidence(FakeTask(bad))
+        check(ok, "未声明只记账不阻断：%r → 本项通过" % (bad,))
+    # 兼容早期键名 sourceClass（E1 写法）
+    src, _, _ = qc.task_source(FakeTask({"材料来源": {"sourceClass": "real_public"}}))
+    check(src == "real_public", "兼容早期键名 sourceClass")
+    # 合成类：生成方式必填，不要求 license/doi
+    ok, d = qc._check_source_evidence(FakeTask({"材料来源": {"class": "synthetic"}}))
+    check(not ok and any("生成方式" in x for x in d), "synthetic 缺生成方式 → 不通过")
+    ok, _ = qc._check_source_evidence(FakeTask(
+        {"材料来源": {"class": "synthetic", "生成方式": "pipeline_auto"}}))
+    check(ok, "synthetic + pipeline_auto → 通过（不要求 license/doi）")
+    # 真实源：dataset/license/抓取日期 + doi|url 齐了才过
+    full = {"class": "real_public", "生成方式": "handmade", "dataset": "X",
+            "license": "CC0-1.0", "抓取日期": "2026-10-19", "url": "https://example.org/x"}
+    ok, _ = qc._check_source_evidence(FakeTask({"材料来源": dict(full)}))
+    check(ok, "real_public 溯源齐 → 通过")
+    for drop in ("dataset", "license", "抓取日期"):
+        m = dict(full)
+        m.pop(drop)
+        ok, d = qc._check_source_evidence(FakeTask({"材料来源": m}))
+        check(not ok and any(drop in x for x in d), "real_public 缺 %s → 不通过" % drop)
+    m = dict(full)
+    m.pop("url")
+    ok, d = qc._check_source_evidence(FakeTask({"材料来源": m}))
+    check(not ok and any("doi 或 url" in x for x in d), "real_public 既无 doi 也无 url → 不通过")
+    m = dict(full, doi="10.x/y")
+    m.pop("url")
+    ok, _ = qc._check_source_evidence(FakeTask({"材料来源": m}))
+    check(ok, "real_public 给 doi 可替代 url")
+    # real_derived 还要标明哪部分是构造的
+    m = dict(full, **{"class": "real_derived"})
+    ok, d = qc._check_source_evidence(FakeTask({"材料来源": m}))
+    check(not ok and any("synthetic_overlays" in x for x in d),
+          "real_derived 缺 synthetic_overlays → 不通过")
+    ok, _ = qc._check_source_evidence(FakeTask(
+        {"材料来源": dict(m, synthetic_overlays=True)}))
+    check(ok, "real_derived + synthetic_overlays → 通过")
+
+
 def main():
-    for fn in (test_tiers, test_tier_rejects, test_purpose, test_majority_repro):
+    for fn in (test_tiers, test_tier_rejects, test_purpose, test_majority_repro, test_source):
         fn()
     if FAILURES:
         print("\n✗ %d 项不符预期：\n  - %s" % (len(FAILURES), "\n  - ".join(FAILURES)))
         return 1
-    print("\n✓ 难度分级/用途/多数票 全部符合预期")
+    print("\n✓ 难度分级/用途/多数票/材料来源 全部符合预期")
     return 0
 
 

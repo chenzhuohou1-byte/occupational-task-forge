@@ -403,6 +403,9 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                              "协议噪声步": bad_steps, "write次数": written,
                              "run_python次数": py_runs, "engine_selftest次数": eng_tests,
                              "work_dir": wd})
+        # 不可信 engine 自测起过的一次性沙箱必须销毁，绝不残留跑着的引擎
+        if selftest is not None and hasattr(selftest, "close"):
+            selftest.close()
 
     if valid == 0:
         raise RuntimeError("agent 档全程没解析出一个有效动作（%d 步全是协议噪声）" % bad_steps)

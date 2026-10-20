@@ -20,6 +20,11 @@ L4_CEIL = 0.10 + 1e-9                   # 前沿档满分率 ≤ 10% → L4（�
 L3_CEIL = 0.30 + 1e-9                   # 前沿档满分率 ≤ 30% → L3（≈ ALE Full-Spectrum）
 FRONT_MIN_RUNS = 10                     # 前沿档要切 10% / 30% 两刀，3 跑的分辨率（⅓）不够
 PURPOSES = ("训练集", "测试集")
+# §3 材料来源两轴（2026-10-20）。两轴而非一个枚举：H3 是真实源**加**显式构造覆盖层、
+# G1 是合成但手工造、casegen 产的是合成且自动造 —— 一个枚举装不下，混在一起会让
+# 「B 类占比」与「自动造产出率」两个统计互相污染。
+SOURCE_CLASSES = ("real_public", "real_derived", "synthetic")
+GEN_MODES = ("pipeline_auto", "handmade")
 
 
 def task_purpose(task):
@@ -30,6 +35,48 @@ def task_purpose(task):
     """
     v = str(task.card.get("用途") or "").strip()
     return (v if v in PURPOSES else "测试集"), v in PURPOSES
+
+
+def task_source(task):
+    """§3 材料来源：返回 (class, 生成方式, 是否已声明)。
+
+    与 `用途` 的缺省策略刻意不同：这里**不猜**。证据不足以可靠反推——E1 用真实 BIDS 却没写
+    license，A 类物化卡上只有 `元数据.生成方式`——猜错会让「B 类为主力」的占比统计失真。
+    所以未声明就记 `未声明`，由 qc 报整改、统计里单列一个桶。
+    读取兼容早期两种键名：`class`（H3）与 `sourceClass`（E1）。
+    """
+    m = task.card.get("材料来源")
+    if not isinstance(m, dict):
+        return "未声明", "", False
+    cls = str(m.get("class") or m.get("sourceClass") or "").strip()
+    gen = str(m.get("生成方式") or "").strip()
+    return ((cls if cls in SOURCE_CLASSES else "未声明"),
+            (gen if gen in GEN_MODES else ""), cls in SOURCE_CLASSES)
+
+
+def _check_source_evidence(task):
+    """按 class 分叉查溯源必备项。**已声明的严查、未声明的只记账不阻断**（迁移口径）。
+
+    这样新题一上来就被约束，而同事 main 上那批还没声明的题不会被一刀切打成不进库；
+    等大家补齐后把本项对「未声明」也改成不通过即可（一行开关）。
+    """
+    cls, gen, declared = task_source(task)
+    m = task.card.get("材料来源") if isinstance(task.card.get("材料来源"), dict) else {}
+    if not declared:
+        return True, ["材料来源未声明（class ∈ %s）：本步只记账不阻断，补齐后转硬闸；"
+                      "占比统计把本条记入「未声明」桶" % "/".join(SOURCE_CLASSES)]
+    bad = []
+    if not gen:
+        bad.append("生成方式必填，只许 %s" % "/".join(GEN_MODES))
+    if cls in ("real_public", "real_derived"):
+        for k in ("dataset", "license", "抓取日期"):
+            if not str(m.get(k) or "").strip():
+                bad.append("%s 必须给 %s" % (cls, k))
+        if not (str(m.get("doi") or "").strip() or str(m.get("url") or "").strip()):
+            bad.append("%s 必须给 doi 或 url" % cls)
+        if cls == "real_derived" and m.get("synthetic_overlays") is None:
+            bad.append("real_derived 必须用 synthetic_overlays 标明哪部分是自己构造的")
+    return (not bad), (bad or ["%s / %s：溯源项齐" % (cls, gen)])
 
 
 def n6_verify(task, pass_threshold=1.0):
@@ -97,6 +144,9 @@ def n6_verify(task, pass_threshold=1.0):
 
     lk_ok, lk_detail = _check_no_answer_leak(task)
     checks.append({"检查": "题面不泄标准答案", "通过": lk_ok, "明细": lk_detail})
+
+    src_ok, src_detail = _check_source_evidence(task)
+    checks.append({"检查": "材料来源声明与溯源齐备", "通过": src_ok, "明细": src_detail})
 
     ok = all(c["通过"] for c in checks)
     return ok, {"task_id": task.task_id, "用途": purpose, "checks": checks,
@@ -330,6 +380,9 @@ def _n6_verify_executable(task):
 
     lk_ok, lk_detail = _check_no_answer_leak(task)
     checks.append({"检查": "题面不泄标准答案", "通过": lk_ok, "明细": lk_detail})
+
+    src_ok, src_detail = _check_source_evidence(task)
+    checks.append({"检查": "材料来源声明与溯源齐备", "通过": src_ok, "明细": src_detail})
 
     ok = all(c["通过"] for c in checks)
     return ok, {"task_id": task.task_id, "范式": "executable",

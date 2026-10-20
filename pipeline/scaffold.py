@@ -488,6 +488,10 @@ def scaffold_task(spec, tasks_dir):
         # §7.1 用途：训练集 / 测试集，决定 scoringBasis 那道闸门的松紧。脚手架默认
         # 填「测试集」（严的那一档）——漏改只会被多拦一道，不会把放宽悄悄给出去。
         "用途": spec.get("用途", "测试集"),
+        # §3 材料来源（两轴）：class ∈ real_public/real_derived/synthetic ×
+        # 生成方式 ∈ pipeline_auto/handmade。**不给默认值**——猜错会让「B 类为主力」的
+        # 占比统计失真，所以留空由作者声明；qc 对未声明只记账、不阻断（见 _check_source_evidence）。
+        "材料来源": spec.get("材料来源", {}),
         "evaluation": {
             "type": "numeric_tabular",
             "artifactModes": ["structured_tabular"],
@@ -828,6 +832,8 @@ def scaffold_executable_task(spec, tasks_dir):
         "measuredDifficulty": [],
         "tier": None,
         "用途": spec.get("用途", "测试集"),
+        # §3 材料来源（两轴），同数值分支：留空由作者声明，qc 对未声明只记账不阻断。
+        "材料来源": spec.get("材料来源", {}),
         "evaluation": {
             "type": "executable_artifact",
             "artifactModes": spec.get("artifactModes",
