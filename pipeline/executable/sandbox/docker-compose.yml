@@ -1,0 +1,46 @@
+# 即用即弃 Flowable 6.5.0 + PostgreSQL 沙箱（判分契约 §9.5 agent-file-engine 不可信自测）。
+#
+# 每个不可信 agent 的一次 N7 解题起一套**独立**栈：独立 compose project、独立 bridge
+# 网络、独立 PG 数据卷、随机 loopback 端口。用完 `compose down -v` 连卷一起销毁——
+# 恶意 BPMN 能碰的只有这套一次性引擎与它自己的库，销毁后不残留、也碰不到正式评测引擎。
+#
+# 与 G1 的 starter compose 的差异（有意）：
+#   · 不绑定长驻 smoke 栈；每次由 engine_sandbox.py 用唯一 project 名新起、用完即毁。
+#   · 端口由 ${FLOWABLE_HOST_PORT} 注入、仅绑 127.0.0.1；DB 端口不发布。
+#   · 管理员/DB 口令由 engine_sandbox.py 每次随机生成经环境注入，绝不落盘、绝不复用 smoke 栈口令。
+#   · 卷为 project 作用域匿名命名卷，`down -v` 必须能连它一起删。
+# 镜像沿用本机已构建的 ale/flowable-rest:6.5.0-local（官方 war 本机不可拉，见 G1 compose 注释）。
+services:
+  postgres:
+    image: ${SANDBOX_PG_IMAGE:-docker.io/library/postgres:13}
+    environment:
+      POSTGRES_DB: flowable
+      POSTGRES_USER: flowable
+      POSTGRES_PASSWORD: ${FLOWABLE_DB_PASSWORD:?engine_sandbox 必须注入随机 DB 口令}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowable -d flowable"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+  flowable-rest:
+    image: ${SANDBOX_FLOWABLE_IMAGE:-ale/flowable-rest:6.5.0-local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${FLOWABLE_HOST_PORT:?engine_sandbox 必须注入宿主端口}:8080"
+    environment:
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/flowable
+      SPRING_DATASOURCE_USERNAME: flowable
+      SPRING_DATASOURCE_PASSWORD: ${FLOWABLE_DB_PASSWORD:?engine_sandbox 必须注入随机 DB 口令}
+      FLOWABLE_REST_APP_ADMIN_USER_ID: ${FLOWABLE_USER:-rest-admin}
+      FLOWABLE_REST_APP_ADMIN_PASSWORD: ${FLOWABLE_PASSWORD:?engine_sandbox 必须注入随机管理员口令}
+      FLOWABLE_HISTORY_LEVEL: full
+      FLOWABLE_ASYNC_EXECUTOR_ACTIVATE: "true"
+volumes:
+  pg_data:

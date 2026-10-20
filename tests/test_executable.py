@@ -80,6 +80,72 @@ def test_crosscheck_core():
     print("✓ 不信任自报：诚实自报放行、伪造全通过被交叉核对抓出")
 
 
+def test_sandbox_isolation_config():
+    """一次性沙箱：每实例独立 project/端口/随机口令，互不复用；base/container 自洽。"""
+    from pipeline.executable.engine_sandbox import DisposableFlowable
+    a, b = DisposableFlowable(), DisposableFlowable()
+    for s in (a, b):
+        assert s.project.startswith("ale-engine-sbx-"), s.project
+        assert isinstance(s.port, int) and 1 <= s.port <= 65535 and s.port != 18080
+        assert s.container == s.project + "-flowable-rest-1"
+        assert (":%d/" % s.port) in s.base
+        env = s._env()
+        for k in ("FLOWABLE_HOST_PORT", "FLOWABLE_DB_PASSWORD", "FLOWABLE_PASSWORD"):
+            assert env.get(k), "沙箱 compose 环境缺 %s" % k
+    # 不复用：project/端口/口令两两不同
+    assert a.project != b.project and a.port != b.port
+    assert a._admin_pw != b._admin_pw and a._db_pw != b._db_pw
+    assert a._admin_pw != a._db_pw
+    print("✓ 一次性沙箱配置隔离（独立 project/端口/随机口令，不复用 smoke 栈）")
+
+
+def test_sandbox_lifecycle_and_teardown():
+    """start→close 的 docker compose 调用序列正确、close 幂等（monkeypatch，不触 docker）。"""
+    from subprocess import CompletedProcess
+    from unittest.mock import patch
+    from pipeline.executable import engine_sandbox as es
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return CompletedProcess(cmd, 0, "", "")
+
+    class _StubAdapter:
+        def probe(self):   # 立即就绪，不触网
+            return {}
+
+    sbx = es.DisposableFlowable()
+    with patch.object(es.subprocess, "run", side_effect=fake_run), \
+         patch.object(es.DisposableFlowable, "adapter", return_value=_StubAdapter()):
+        sbx.start()
+        sbx.close()
+        sbx.close()   # 幂等：第二次不应再发 down
+
+    def _subcmds(verb):
+        return [c for c in calls if len(c) > 2 and c[0] == "docker" and c[1] == "compose" and verb in c]
+    assert _subcmds("up"), "start 没发 compose up"
+    downs = _subcmds("down")
+    assert len(downs) == 1, "close 应恰好 down 一次（幂等），实际 %d 次" % len(downs)
+    assert "-v" in downs[0], "down 必须带 -v 连数据卷一起销毁"
+    assert all(("-p" in c and sbx.project in c) for c in _subcmds("up") + downs), \
+        "compose 命令必须带本沙箱独立 project"
+    print("✓ 沙箱生命周期：up→down -v 序列正确、close 幂等、始终 project 作用域")
+
+
+def test_selftest_close_and_untrusted():
+    """build_selftest 返回的闭包带 .close/.untrusted；untrusted 可显式关、缺省读默认。"""
+    task = Task("t", "/tmp/x", {"evaluation": {
+        "type": "executable_artifact", "engine": {"adapter": "flowable"}}})
+    st = selftest.build_selftest(task, "/tmp/x", untrusted=False)
+    assert callable(st) and callable(getattr(st, "close", None))
+    assert st.untrusted is False
+    st.close()   # 没起沙箱时 close 应安全无副作用
+    st2 = selftest.build_selftest(task, "/tmp/x")
+    assert st2.untrusted == selftest.DEFAULT_UNTRUSTED
+    print("✓ selftest 闭包带 close/untrusted（默认=%s，可显式关）" % selftest.DEFAULT_UNTRUSTED)
+
+
 # ---------------- B. 真实引擎集成（自动发现 + 够不着就跳过）----------------
 def _find_executable_tasks():
     tdir = os.environ.get("ALE_TASKS_DIR", os.path.join(ROOT, "tasks"))
@@ -149,6 +215,9 @@ def main():
     test_list_negatives()
     test_selftest_gating()
     test_crosscheck_core()
+    test_sandbox_isolation_config()
+    test_sandbox_lifecycle_and_teardown()
+    test_selftest_close_and_untrusted()
     if "--integration" in sys.argv:
         test_integration()
     print("可执行范式%s自测全过" % ("真实集成" if "--integration" in sys.argv else "离线"))

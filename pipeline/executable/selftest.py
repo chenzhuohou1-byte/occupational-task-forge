@@ -5,30 +5,42 @@
 
     1. 不泄答案：只读 agent 自己的 output/ 与 agent 当场提供的场景；**绝不碰** reference/、
      golden、negatives、隐藏评测场景。隐藏考点仍然隐藏。
-     2. 当前仅做 deployment 生命周期清理，不构成数据库/进程安全隔离；只跑候选定义，不部署
-     original。生产不可信 agent 不能把此工具视为安全边界。
+     2. 生产隔离：不可信自测默认（EXEC_ENGINE_SANDBOX）起一套一次性 Flowable+PG 沙箱
+     （独立 project/网络/卷/随机端口/随机口令，见 engine_sandbox.py），本轮自测在其中跑、
+     用完连卷销毁；恶意 BPMN 碰不到正式评测引擎与他人数据，也只跑候选定义、不部署 original。
      3. 非等价：用了这个工具集的测量记为 toolset=agent-file-engine，**不参与难度定级**
      （qc 只认 agent-file-python / agent-file-tools）——拿到引擎反馈的难度和盲测不可比。
 
-
-安全边界：当前只有 deployment 生命周期清理，不构成数据库或进程隔离，不能保证恶意
-BPMN 脚本不读取/修改同引擎资源。独立受限引擎容器及数据库隔离仍待实现；当前仅供可信
-参考产物的功能验证，不应作为生产不可信 agent 自测工具开放。
+安全边界：不可信模式每轮解题独占一套即用即弃引擎+库，解题结束 `compose down -v` 销毁，
+不残留、不与正式评测引擎共享状态。仅在可信参考产物功能验证时可置 EXEC_ENGINE_SANDBOX=0
+复用长驻 smoke 栈省时——该退路不得开放给不可信 agent。
 """
 import os
 
 from .engines import get_adapter
 from .engines.base import EngineUnavailable
+from .engine_sandbox import DisposableFlowable
 
 MAX_SCENARIOS_PER_CALL = 20   # 单次自测最多跑这么多场景，挡住把引擎当免费算力刷
 MAX_CALLS_PER_RUN = 10        # 单次 N7 解题最多自测这么多轮，超过即拒（预算纪律）
 
+# 不可信隔离默认开：此工具集本就是给不可信 agent 的，默认每次解题起一次性沙箱引擎。
+# 仅在可信参考产物功能验证、想复用长驻 smoke 栈省时时，置 EXEC_ENGINE_SANDBOX=0。
+DEFAULT_UNTRUSTED = os.getenv("EXEC_ENGINE_SANDBOX", "1") != "0"
 
-def build_selftest(task, work_dir):
+
+def build_selftest(task, work_dir, untrusted=None):
     """按任务卡装配一个「只认候选产物 + agent 自带场景」的引擎自测闭包。
 
     仅对 evaluation.type==executable_artifact 且 engine.adapter==flowable 的任务可用；
     其它一律返回 None（调用方据此拒绝开 engine 工具集）。
+
+    untrusted（缺省读 EXEC_ENGINE_SANDBOX，默认 True）：不可信隔离。为 True 时首次自测
+    会起一套一次性 Flowable+PG 沙箱（独立 project/网络/库/端口），本次解题的所有自测都在
+    这套沙箱里跑，解题结束由调用方 close() 连卷销毁——恶意 BPMN 碰不到正式评测引擎与他人数据。
+    为 False 时复用长驻 smoke 栈（只应用于可信参考产物的功能验证）。
+
+    返回的闭包带 .close()：调用方务必在解题 finally 里调用，确保沙箱被销毁、不残留跑着的引擎。
     """
     ev = task.card.get("evaluation") or {}
     if str(ev.get("type", "")).strip() != "executable_artifact":
@@ -37,6 +49,7 @@ def build_selftest(task, work_dir):
     if engine_cfg.get("adapter") != "flowable":
         return None   # 目前只有 Flowable 适配器支持 agent 侧自测；容器类自测另议
 
+    untrusted = DEFAULT_UNTRUSTED if untrusted is None else bool(untrusted)
     base_meta = dict(ev.get("task_meta") or {})
     out_dir = os.path.join(work_dir, "output")
     # 自测 task_meta：只保留跑候选定义需要的字段，org_hierarchy 指向 input 里的公开副本。
@@ -50,7 +63,22 @@ def build_selftest(task, work_dir):
         cand = os.path.join(work_dir, "input", "starter_project", "org_hierarchy.json")
         meta["org_hierarchy"] = cand if os.path.isfile(cand) else org
 
-    state = {"calls": 0}
+    state = {"calls": 0, "sandbox": None}
+
+    def _acquire_adapter():
+        """取本轮自测用的适配器：不可信→懒起一次性沙箱并复用；可信→长驻 smoke 栈。
+
+        可能抛 EngineUnavailable（沙箱起不来/引擎不可达），由 run() 收敛成 engine_unavailable。
+        """
+        if not untrusted:
+            adapter = get_adapter("flowable", **(engine_cfg.get("adapter_args") or {}))
+            adapter.probe()
+            return adapter
+        if state["sandbox"] is None:
+            sbx = DisposableFlowable()
+            sbx.start()                 # 起栈+就绪轮询；失败会自行销毁再抛
+            state["sandbox"] = sbx
+        return state["sandbox"].adapter()
 
     def run(scenarios):
         """跑一轮自测，返回给 agent 看的结果 dict（永不抛，异常收敛成可读文本）。"""
@@ -69,9 +97,8 @@ def build_selftest(task, work_dir):
         if not os.path.isfile(bpmn):
             return {"ok": False, "error": "还没在 output/ 写出 %s，无法部署自测" % meta["bpmn_file"]}
 
-        adapter = get_adapter("flowable", **(engine_cfg.get("adapter_args") or {}))
         try:
-            adapter.probe()
+            adapter = _acquire_adapter()
         except EngineUnavailable as exc:
             return {"ok": False, "engine_unavailable": True,
                     "error": "真实引擎当前不可达，本轮无法自测（不影响你继续写文件）：" + str(exc)[:200]}
@@ -109,4 +136,13 @@ def build_selftest(task, work_dir):
             if handle is not None:
                 adapter.teardown(handle)
 
+    def close():
+        """销毁本轮解题起的一次性沙箱（幂等）。调用方务必在解题 finally 里调。"""
+        sbx = state.get("sandbox")
+        if sbx is not None:
+            sbx.close()
+            state["sandbox"] = None
+
+    run.close = close
+    run.untrusted = untrusted
     return run
