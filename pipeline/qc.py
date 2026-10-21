@@ -727,8 +727,10 @@ def _check_independence(task):
 
 # ref 里的文件名 token：一直吃到扩展名为止，只在空白/逗号/加号/井号处断开。
 # 注意不能把全角括号当分隔符——真实附件名里就有「施工合同专用条款（摘录）.docx」。
-_REF_FILE_RE = re.compile(
-    r"[^\s,，+#]+\.(?:xlsx|xls|csv|docx|doc|pdf|md|txt|json)", re.I)
+# 扩展名不再走白名单：真实软件题的附件是 .kicad_pcb/.xml/.vcf/.v…，白名单永远补不全；
+# 扩展名只认 ASCII（\w 会吃进中文，把「规则.md的第3节」整段当扩展名）。只要能在 input 下
+# 找到同名文件才算数，误抽出来的「1.2」之类 token 找不到附件，不影响判定。
+_REF_FILE_RE = re.compile(r"[^\s,，+#]+\.[A-Za-z0-9_]{1,12}")
 
 
 

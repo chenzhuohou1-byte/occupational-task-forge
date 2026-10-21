@@ -171,6 +171,23 @@ def runtime():
     return res
 
 
+_USER_BASE_CACHE = {}
+
+
+def _user_base(py):
+    """考生解释器在真 HOME 下的用户 site 根目录（run_python 换了假 HOME，要用它钉回去）。"""
+    if py not in _USER_BASE_CACHE:
+        if py == sys.executable:
+            import site
+            ub = site.getuserbase()
+        else:
+            r = subprocess.run([py, "-c", "import site;print(site.getuserbase())"],
+                               capture_output=True, text=True, timeout=30)
+            ub = r.stdout.strip() if r.returncode == 0 else ""
+        _USER_BASE_CACHE[py] = ub
+    return _USER_BASE_CACHE[py]
+
+
 def _sandbox_profile(wd, scratch):
     """macOS sandbox-exec 规则：无网络、读不了家目录（答案在任务目录、密钥在 .env，都在 ~ 下）、
     只能写 output/ 与草稿目录。Python 自身、用户 site-packages、runtime() 声明的软件目录放行读。"""
@@ -221,9 +238,21 @@ def run_python(wd, code, tag, timeout=None, out_limit=None):
     with open(script, "w", encoding="utf-8") as f:
         f.write(code)
     py, _allow, extra_path, _tag = runtime()
+    # HOME 指到草稿目录里的假家目录：真家目录在沙箱里只读，KiCad/Inkscape 每次调用都去 ~/Library
+    # 建配置/字体缓存目录失败，刷满 stderr 吃掉输出额度（C2/C10 实测）。KiCad 不认 HOME，另给
+    # KICAD_CONFIG_HOME；PYTHONUSERBASE 钉回真用户目录，免得用户 site-packages 跟着 HOME 丢掉。
+    fake_home = os.path.join(scratch, "_home")
+    os.makedirs(fake_home, exist_ok=True)
     env = {"PATH": os.pathsep.join(extra_path + ["/usr/bin", "/bin"]),
-           "HOME": os.path.expanduser("~"), "LANG": "en_US.UTF-8",
-           "TMPDIR": scratch, "MPLCONFIGDIR": scratch}
+           "HOME": fake_home, "LANG": "en_US.UTF-8",
+           "TMPDIR": scratch, "MPLCONFIGDIR": scratch,
+           "KICAD_CONFIG_HOME": os.path.join(fake_home, "kicad"),
+           "XDG_CONFIG_HOME": os.path.join(fake_home, ".config"),
+           "XDG_CACHE_HOME": os.path.join(fake_home, ".cache"),
+           "XDG_DATA_HOME": os.path.join(fake_home, ".local", "share")}
+    ub = _user_base(py)
+    if ub:
+        env["PYTHONUSERBASE"] = ub
     cmd = [py, "-X", "utf8", script]
     if shutil.which("sandbox-exec"):
         prof = os.path.join(scratch, "_sandbox.sb")
@@ -493,6 +522,20 @@ def _selftest():
         shutil.rmtree(wd, ignore_errors=True)
         assert "LEAK" not in obs and obs.count("blocked") == 3, obs
         print("agentsolve 自测④沙箱隔离 OK（读 ~ / 写 input / 联网 全拦）")
+
+        # ④b 假家目录：HOME/XDG/KICAD_CONFIG_HOME 都在草稿目录里且可写（软件不再刷配置目录报错）
+        wd = tempfile.mkdtemp(prefix="ale_sbtest_")
+        os.makedirs(os.path.join(wd, "input"))
+        os.makedirs(os.path.join(wd, "output"))
+        obs, _ = run_python(wd, "\n".join([
+            "import os",
+            "for k in ('HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'KICAD_CONFIG_HOME'):",
+            "    d = os.path.join(os.environ[k], 'probe'); os.makedirs(d, exist_ok=True)",
+            "    print('home_ok' if os.path.realpath(d).startswith(os.path.realpath('_scratch')) else 'home_bad', k)"]),
+            "homeprobe")
+        shutil.rmtree(wd, ignore_errors=True)
+        assert obs.count("home_ok") == 4 and "home_bad" not in obs, obs
+        print("agentsolve 自测④b 假家目录可写且在草稿目录内 OK")
 
         # ⑤ 指定考生解释器（ALE_RUN_PYTHON）后：用的是它、标签记得住，且家目录照旧读不到
         saved = {k: os.environ.get(k) for k in ("ALE_RUN_PYTHON", "ALE_RUN_RUNTIME")}

@@ -222,8 +222,33 @@ def test_source():
     check(ok, "real_derived + synthetic_overlays → 通过")
 
 
+def test_basis_ref_suffix():
+    """§7 依据可定位：ref 里的文件名不限后缀（真实软件题的 .kicad_pcb/.net.xml/.vcf），
+    但仍须真能在 input 下找到同名文件。"""
+    import tempfile
+    print("\n[依据可定位·后缀]")
+    d = tempfile.mkdtemp(prefix="basis_sfx_")
+    os.makedirs(os.path.join(d, "assets", "input", "工程"))
+    for f in ("工程/板.kicad_pcb", "路网.net.xml", "规程.md"):
+        open(os.path.join(d, "assets", "input", f), "w").close()
+    t = FakeTask({})
+    t.dir = d
+    for ref, want in (("input/工程/板.kicad_pcb", True),
+                      ("input/路网.net.xml#junction", True),
+                      ("input/规程.md的第3节", True),      # 扩展名后紧跟中文：中文不能吞进扩展名
+                      ("input/规程.md 第3节", True),
+                      ("input/不存在.kicad_pcb", False)):
+        e = {"point": "p", "source": "material", "ref": ref}
+        t.card = {"scoringBasis": [e]}
+        ok, _ = qc._check_basis_traceable(t)
+        check(ok == want, "ref %r → %s" % (ref, "可定位" if want else "指不到"))
+    import shutil
+    shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
-    for fn in (test_tiers, test_tier_rejects, test_purpose, test_majority_repro, test_source):
+    for fn in (test_tiers, test_tier_rejects, test_purpose, test_majority_repro, test_source,
+               test_basis_ref_suffix):
         fn()
     if FAILURES:
         print("\n✗ %d 项不符预期：\n  - %s" % (len(FAILURES), "\n  - ".join(FAILURES)))
