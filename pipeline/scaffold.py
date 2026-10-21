@@ -741,12 +741,31 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TASK_DIR = os.path.dirname(HERE)
-# 让 pipeline 包可被 import（产线内运行时已在 path；独立运行时兜底）
+# 让 pipeline 包可被 import。两种摆法都要能找到框架仓：
+#   ① 任务在框架仓内（tasks/<领域>/<任务>/）→ 往上数几层就有 pipeline/executable；
+#   ② 任务在**数据仓**内（数据仓与框架仓同级）→ 往上找兄弟目录 occupational-task-forge。
+# 缺 ② 的话，任务一进数据仓判分器就 ModuleNotFoundError，被 qc 记成「工具链不可达」故障
+# （H3、E1 各踩过一次）。也可用 ALE_FORGE_DIR 显式指定框架仓位置。
 _root = TASK_DIR
 for _ in range(6):
     if os.path.isdir(os.path.join(_root, "pipeline", "executable")):
-        sys.path.insert(0, _root); break
+        sys.path.insert(0, _root)
+        break
     _root = os.path.dirname(_root)
+else:
+    _forge = os.environ.get("ALE_FORGE_DIR") or ""
+    # 注意必须先判 _forge 非空：os.path.join("", "pipeline", "executable") 是**相对路径**，
+    # 当 cwd 恰好是框架仓时它会 isdir 成真，于是跳过下面的兄弟目录查找、什么都没加进 path。
+    if not (_forge and os.path.isdir(os.path.join(_forge, "pipeline", "executable"))):
+        _forge, _p = "", TASK_DIR
+        for _ in range(6):
+            _p = os.path.dirname(_p)
+            _sib = os.path.join(_p, "occupational-task-forge")
+            if os.path.isdir(os.path.join(_sib, "pipeline", "executable")):
+                _forge = _sib
+                break
+    if _forge:
+        sys.path.insert(0, _forge)
 
 from pipeline.executable import runner  # noqa: E402
 
