@@ -136,3 +136,25 @@ python3 n7_run.py --write-card --from runs/n7/frontier.json   # 回填进 task_c
 可执行范式候选跑在容器里（非 root、`--network none`、`--read-only`、`--cap-drop ALL`、
 标准答案不进候选挂载点）；给不可信 agent 的引擎自测起一次性 Flowable+PG 沙箱、用完销毁。
 没 docker / 没沙箱相关步骤会**拒跑**而非裸奔，这是纪律不是 bug。
+
+### 生题侧沙箱解决机密性，不解决完整性（重要边界）
+
+数值 casegen 那条线把模型写的代码（`参数生成器/solve/solve2/物化`）关进 `sandbox-exec`
+子进程：读不到 `.env`、连不上网、只能写 scratch——这是**机密性**。
+
+但**判定本身也在同一个不可信进程里算**：`冒烟 / 难度门 / crosscheck` 都由 worker 执行并回报
+`stage`。模型代码完全可以 monkeypatch 掉 `crosscheck.crosscheck` 让 worker 直接回
+`stage="ok"`。换句话说，**「双实现一致」这件事目前实际上由不可信进程自报**。
+
+宿主侧确实有兜底，而且这些都在可信进程里跑、伪造不了：
+
+- **N6**（golden 实测 ==1.0 / 每条负例被判负 / 题面不泄答案 / 材料来源溯源齐）
+- **N8**（空交付与地板被正确否决）
+- **落盘路径校验**：worker 回传的文件名一律过 `_safe_under()`——拒绝绝对路径与 `..`，
+  realpath 后必须仍在 `assets/input` / `assets/reference/expected` 之下。
+  否则模型让 `render_inputs()` 返回 `"../../../x"` 就能借宿主的完整权限写到任意位置，
+  等于绕过沙箱的写限制。
+- **worker 超时按返修处理**：超时统一转成 `RuntimeError`，不会让死循环打崩整条生成循环。
+
+所以现阶段的准确说法是：**机密性有保证，案例逻辑自洽这一层不防伪造**。要补完整性，
+得把判定搬回宿主侧重算（宿主只收 worker 吐的 world/answer 原始数据、自己做比对），属后续改造。

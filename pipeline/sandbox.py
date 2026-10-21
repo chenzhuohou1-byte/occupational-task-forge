@@ -8,6 +8,16 @@
 不是不可信模型产物）。
 
 与 agentsolve.run_python 同一套纪律，但它服务 N7 测量那条载荷路径、不动它，这里独立实现。
+
+**安全边界：本模块解决机密性，不解决完整性。**
+模型代码跑在沙箱里读不到 `.env`、连不上网、写不出 scratch 之外——这是机密性。但
+`冒烟 / 难度门 / crosscheck` 这些**判定本身也在同一个不可信进程里算**，模型代码完全可以
+monkeypatch 掉 `crosscheck.crosscheck` 让 worker 直接回 `stage="ok"`。也就是说
+**「双实现一致」这件事目前实际上由不可信进程自报**。
+宿主侧仍有兜底：N6（golden==1.0 / 每条负例被判负 / 不泄答案）、N8（空交付与地板被否决）、
+以及宿主自己做的落盘与路径校验——这些在可信进程里跑，伪造不了。但"案例逻辑真的自洽"
+这一层，现阶段**不是防伪造的**。要做到完整性，得把判定搬到宿主侧重算（例如宿主只收
+worker 吐出的 world/answer 原始数据，由宿主执行比对），属后续改造。
 """
 import json
 import os
@@ -67,8 +77,15 @@ def run_worker(argv, read_dirs, timeout=900, label="casegen-worker"):
             raise RuntimeError(
                 "%s 需要沙箱（macOS sandbox-exec）；本机没有，拒跑以免模型代码读到 .env/密钥或联网。"
                 "可信离线自测可设 %s=1 放行。" % (label, _UNSANDBOXED_ENV))
-        r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True,
-                           timeout=timeout, encoding="utf-8", errors="replace")
+        # 超时必须转成 RuntimeError：subprocess.TimeoutExpired 不是 RuntimeError，
+        # 而调用方（casegen_build._check_round）只捕 RuntimeError —— 模型写个死循环就会把
+        # 整条生成循环打崩，而不是记成一轮返修。这里统一成"基建级 RuntimeError"。
+        try:
+            r = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True,
+                               timeout=timeout, encoding="utf-8", errors="replace")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("%s 超时（>%ss）：模型代码可能死循环或等外部资源；本轮按返修处理"
+                               % (label, timeout))
         out = (r.stdout or "").strip()
         if not out:
             raise RuntimeError("%s 无输出（退出码 %d）：%s" % (label, r.returncode, (r.stderr or "")[:600]))

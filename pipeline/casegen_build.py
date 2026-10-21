@@ -434,6 +434,11 @@ def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, sub
         # 负例/地板不符 → 判分器或地板合成器的锅（框架侧）；正例/部分分不符 → 案例侧
         return ("framework" if e.framework_side else "materialize"), "%s\n逐字段线索：\n%s" % (
             e, json.dumps(e.info, ensure_ascii=False, indent=1, default=str)[:3500]), None
+    except casegen.UnsafePayloadPath as e:
+        # worker 回传的文件名越界（绝对路径/含 ..）：案例侧问题，给干净的返修线索而不是 traceback
+        return "materialize", ("物化被拒：%s\n"
+                               "render_inputs()/deliver() 的键必须是**任务目录内的相对文件名**，"
+                               "不许绝对路径、不许 '..'。" % e), None
     except Exception:  # noqa: BLE001 物化失败也是返修线索
         return "materialize", "物化失败：\n" + traceback.format_exc(limit=6), None
     t = tasks.load_task(mat["dir"])

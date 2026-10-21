@@ -189,6 +189,45 @@ def _sidecar(task, subdomain_label):
     return side
 
 
+class UnsafePayloadPath(RuntimeError):
+    """worker 回传的文件名不安全（绝对路径 / 含 .. / realpath 跳出目标目录）。
+
+    映射成 materialize 阶段的返修线索，不是框架故障：这类键只可能来自模型写的
+    `render_inputs()` / `deliver()`，属案例侧问题。
+    """
+
+
+def _safe_under(base, rel, what):
+    """把 worker 给的相对键安全地解析到 base 下，越界即抛 UnsafePayloadPath。
+
+    **这是沙箱写限制的宿主侧补丁**：worker 进程只许写 scratch，但它回传的**文件名**
+    会被宿主用来落盘，而宿主是完整权限。模型让 `render_inputs()` 返回 `"../../../x"`
+    或 `/tmp/x` 时，`os.path.join(indir, rel)` 会跳出任务目录（绝对路径更是直接顶掉 base）——
+    等于绕过沙箱。所以这里拒收绝对路径与任何 `..` 分量，并在 realpath 后断言仍在 base 之下。
+    """
+    if not isinstance(rel, str) or not rel.strip():
+        raise UnsafePayloadPath("%s 的文件名必须是非空字符串，实得 %r" % (what, rel))
+    if os.path.isabs(rel) or os.path.splitdrive(rel)[0]:
+        raise UnsafePayloadPath("%s 的文件名不许是绝对路径：%r" % (what, rel))
+    parts = rel.replace("\\", "/").split("/")
+    if any(p == ".." for p in parts):
+        raise UnsafePayloadPath("%s 的文件名不许含 '..'：%r" % (what, rel))
+    base_real = os.path.realpath(base)
+    target = os.path.realpath(os.path.join(base_real, rel))
+    if target != base_real and not target.startswith(base_real + os.sep):
+        raise UnsafePayloadPath("%s 的文件名解析后跳出了目标目录：%r → %s" % (what, rel, target))
+    return target
+
+
+def _write_payload_files(base, mapping, what):
+    """把 {文件名: 文本} 落盘到 base 下，逐个走 _safe_under 校验。"""
+    for rel, text in (mapping or {}).items():
+        path = _safe_under(base, rel, what)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text if isinstance(text, str) else str(text))
+
+
 def _invoke_worker(case_dir, mode, seed=0, n=200, hardness=None):
     """在沙箱子进程里跑 casegen_worker，取回判定/渲染 payload（模型代码不进本进程）。"""
     argv = ["-m", "pipeline.casegen_worker", os.path.abspath(case_dir),
@@ -232,20 +271,17 @@ def _materialize_from_payload(payload, out_root, subdomain=None):
     assets = os.path.join(task_dir, "assets")
 
     # 真实 input：worker 渲染好的附件 + 规则.md（判分依据的出处）
+    # 文件名来自不可信 worker，必须过 _safe_under —— 否则等于绕过沙箱的写限制。
     indir = os.path.join(assets, "input")
     _clear_dir(indir)
-    for rel, text in payload["inputs"].items():
-        with open(os.path.join(indir, rel), "w", encoding="utf-8") as f:
-            f.write(text)
+    _write_payload_files(indir, payload["inputs"], "render_inputs")
     with open(os.path.join(indir, "核算规则.md"), "w", encoding="utf-8") as f:
         f.write(payload.get("rules_md", ""))
 
     # 真实 expected：worker 侧 solve 复算好的交付（绝不手抄）
     expdir = os.path.join(assets, "reference", "expected")
     _clear_dir(expdir)
-    for fn, text in payload["expected"].items():
-        with open(os.path.join(expdir, fn), "w", encoding="utf-8") as f:
-            f.write(text)
+    _write_payload_files(expdir, payload["expected"], "deliver")
 
     obs, det = _make_fixtures(task_dir)
     bad, msgs = [], []
@@ -290,10 +326,55 @@ def _materialize_from_payload(payload, out_root, subdomain=None):
     return {"dir": task_dir, "fixtureScores": obs}
 
 
+def _path_guard_selftest():
+    """worker 回传的文件名必须被挡在目标目录内（评审意见①：沙箱写限制的宿主侧补丁）。"""
+    import tempfile
+    base = tempfile.mkdtemp(prefix="casegen_guard_")
+    try:
+        for bad in ("../../../escaped.txt", "/tmp/absolute_overwrite.txt", "a/../../b.txt",
+                    "", "   ", None, "..\\..\\win.txt"):
+            try:
+                _safe_under(base, bad, "render_inputs")
+            except UnsafePayloadPath:
+                continue
+            raise AssertionError("越界键未被拦住：%r" % (bad,))
+        assert _safe_under(base, "ok.csv", "x") == os.path.join(os.path.realpath(base), "ok.csv")
+        assert _safe_under(base, "sub/ok.csv", "x").startswith(os.path.realpath(base) + os.sep)
+        # 真落盘：越界键不许在磁盘上留下任何东西
+        outside = os.path.join(os.path.dirname(base), "ESCAPED_SHOULD_NOT_EXIST.txt")
+        try:
+            _write_payload_files(base, {"../ESCAPED_SHOULD_NOT_EXIST.txt": "x"}, "render_inputs")
+        except UnsafePayloadPath:
+            pass
+        assert not os.path.exists(outside), "越界写竟然落盘了：%s" % outside
+        _write_payload_files(base, {"good.csv": "1"}, "render_inputs")
+        assert os.path.isfile(os.path.join(base, "good.csv")), "正常键应能落盘"
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+    print("✓ 路径守卫：绝对路径/../ /空键被拒且不落盘，正常键照常写入")
+    return True
+
+
+def _worker_timeout_selftest():
+    """worker 超时必须变成 RuntimeError（评审意见②：否则 TimeoutExpired 会打崩生成循环）。"""
+    try:
+        sandbox.run_worker(["-c", "import time; time.sleep(5)"], [], timeout=1,
+                           label="timeout-probe")
+    except RuntimeError as e:
+        assert "超时" in str(e), "超时异常的说明应点明超时：%s" % e
+        print("✓ worker 超时 → RuntimeError（_check_round 的 except RuntimeError 能接住）")
+        return True
+    except BaseException as e:  # noqa: BLE001 任何别的异常类型都意味着调用方接不住
+        raise AssertionError("超时应抛 RuntimeError，实际抛 %s" % type(e).__name__)
+    raise AssertionError("超时竟然没抛异常")
+
+
 def _selftest():
     """离线自测：把 crosscheck_cases/good 物化成任务，跑 qc 要 N6/N8 全过（难度未测→不进库）。"""
     import tempfile
     from . import qc
+    guard_ok = _path_guard_selftest()
+    timeout_ok = _worker_timeout_selftest()
     case = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crosscheck_cases", "good")
     out = tempfile.mkdtemp(prefix="casegen_selftest_")
     try:
@@ -307,7 +388,7 @@ def _selftest():
         print(("✓" if n8_ok else "✗") + " N8 地板=0（%s）" % n8.get("各档地板"))
         print(("✓" if not diff_ok else "✗") + " 难度未测→定不出级→不进库（%s）" %
               (not diff_ok))
-        ok = n6_ok and n8_ok and not diff_ok
+        ok = n6_ok and n8_ok and not diff_ok and guard_ok and timeout_ok
         print("\n%s" % ("casegen 物化半段自测通过" if ok else "casegen 物化半段自测失败"))
         return ok
     finally:
