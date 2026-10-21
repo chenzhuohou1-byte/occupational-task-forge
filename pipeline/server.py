@@ -148,6 +148,92 @@ def _config_payload():
             "concurrency": CFG.concurrency, "pass_threshold": CFG.pass_threshold}
 
 
+def _exec_checklist_payload(task):
+    """可执行范式③「填 reference」的待填/已填清单（**只读**，不跑引擎/容器/模型）。
+
+    按 task_meta 推出该填哪些文件，逐项查存在性与条数，供控制台面板指引协作者。
+    它**不替代 qc** —— qc 才是真闸门（golden==1.0 / 负例被判负 / 地板…），这里只回答"还差什么"。
+    """
+    c = task.card
+    ev = c.get("evaluation") or {}
+    tm = ev.get("task_meta") or {}
+    ref = os.path.join(task.dir, "assets", "reference")
+    inp = os.path.join(task.dir, "assets", "input")
+    src = c.get("材料来源") if isinstance(c.get("材料来源"), dict) else {}
+    cls = str((src or {}).get("class") or (src or {}).get("sourceClass") or "")
+    real = cls in ("real_public", "real_derived")
+    deliver = tm.get("deliverable") or next(iter(c.get("交付要求") or {}), "") or "交付物"
+    items = []
+
+    def add(key, rel, ok, need=True, note=""):
+        items.append({"项": key, "路径": rel, "必需": need, "已填": bool(ok), "说明": note})
+
+    add("题面 TASK_PROMPT.md", "assets/input/TASK_PROMPT.md",
+        os.path.isfile(os.path.join(inp, "TASK_PROMPT.md")), True, "派活的话；别写步骤")
+    add("输出契约 output_contract.json", "assets/input/output_contract.json",
+        os.path.isfile(os.path.join(inp, "output_contract.json")), False, "钉死交付字段，减少同义词歧义")
+    add("溯源 provenance.json", "assets/input/provenance.json",
+        os.path.isfile(os.path.join(inp, "provenance.json")), real,
+        "真实源必需：逐文件 url+bytes+sha256" if real else "仅真实源(real_*)需要")
+
+    # cases_dir 只有容器/host_scorer 形态才有（每 case 一目录 + expected.json）；
+    # flowable 形态的「case」是 cases_manifest 里的 scenarios，没有 case 目录——
+    # 所以这一项仅在 task_meta 显式给了 cases_dir 时才要求，别拿容器的形状去卡引擎题。
+    cases_dir = tm.get("cases_dir")
+    if cases_dir:
+        cd = cases_dir if os.path.isabs(cases_dir) else os.path.join(task.dir, cases_dir)
+        names = sorted(d for d in (os.listdir(cd) if os.path.isdir(cd) else [])
+                       if os.path.isdir(os.path.join(cd, d)))
+        bad = [n for n in names if not os.path.isfile(os.path.join(cd, n, "expected.json"))]
+        add("隐藏 cases（每个一考点）", cases_dir, names and not bad, True,
+            ("共 %d 个 case%s" % (len(names),
+             ("；缺 expected.json：" + "、".join(bad)) if bad else "；均带 expected.json"))
+            if names else "一个都没有：每个 case 一目录，内含 session/ 与 expected.json")
+
+    man = tm.get("cases_manifest")
+    if man:
+        add("cases 清单 %s" % man, os.path.join("assets/reference", man),
+            os.path.isfile(os.path.join(ref, man)), True, "id 必须与 case 目录名一致")
+
+    gp = os.path.join(ref, "golden", "output", deliver)
+    add("golden 参考交付 %s" % deliver, "assets/reference/golden/output/%s" % deliver,
+        os.path.isfile(gp), True, "必须判 1.0；建议用第二实现交叉复算出 expected")
+
+    ndir = os.path.join(ref, "negatives")
+    negs = sorted(d for d in (os.listdir(ndir) if os.path.isdir(ndir) else [])
+                  if os.path.isdir(os.path.join(ndir, d, "output")))
+    mf = os.path.join(ndir, "manifest.json")
+    marks = []
+    if os.path.isfile(mf):
+        try:
+            rows = json.load(open(mf, encoding="utf-8"))
+            marks = [r.get("name") for r in rows if isinstance(r, dict)
+                     and (r.get("faked_results") or r.get("floor"))]
+        except (ValueError, OSError):
+            marks = []
+    need_faked = bool(ev.get("selfReportCrossCheck"))
+    add("负例 negatives/ + manifest.json", "assets/reference/negatives/",
+        negs and os.path.isfile(mf) and marks, True,
+        "共 %d 条；manifest %s；地板/伪造自报标记：%s" % (
+            len(negs), "有" if os.path.isfile(mf) else "缺",
+            "、".join(m for m in marks if m) or ("缺 faked_results 负例" if need_faked else "缺 floor:true 负例")))
+
+    hs = tm.get("host_scorer")
+    if hs:
+        add("宿主判分 %s" % hs, hs, os.path.isfile(os.path.join(task.dir, hs)), True,
+            "score_case(got, expected, session) → {score,passed,info}；判分分层写这里")
+    add("范式静态检查 scripts/checks_task.py", "scripts/checks_task.py",
+        os.path.isfile(os.path.join(task.dir, "scripts", "checks_task.py")), False, "可选")
+
+    done = sum(1 for i in items if i["必需"] and i["已填"])
+    need = sum(1 for i in items if i["必需"])
+    return {"task_id": task.task_id, "范式": ev.get("type"), "adapter": (ev.get("engine") or {}).get("adapter"),
+            "必需已填": done, "必需合计": need, "可跑qc": done == need, "清单": items,
+            "n7命令": ('ALE_LLM_PROVIDER=openai ALE_LLM_MODEL=glm-5.3-flash N7_TASK="%s" '
+                       'N7_TIER=便宜档 N7_MODE=agent N7_RUNS=10 N7_OUT=runs/n7/cheap.json '
+                       'ALE_TASKS_DIR="%s" python3 n7_run.py') % (task.task_id, CFG.tasks_dir)}
+
+
 def _asset_path(task, rel):
     """把相对路径安全解析到 <task>/assets 下，防目录穿越。"""
     base = os.path.abspath(os.path.join(task.dir, "assets"))
@@ -217,6 +303,11 @@ class Handler(BaseHTTPRequestHandler):
             if not t:
                 return self._send(404, {"error": "任务不存在"})
             return self._send(200, _task_files_payload(t))
+        if p.path == "/api/exec_checklist":
+            t = _task_by_id(parse_qs(p.query).get("task_id", [""])[0])
+            if not t:
+                return self._send(404, {"error": "任务不存在"})
+            return self._send(200, _exec_checklist_payload(t))
         if p.path == "/api/run":
             rid = parse_qs(p.query).get("id", [""])[0]
             d = os.path.join(CFG.runs_dir, rid)
