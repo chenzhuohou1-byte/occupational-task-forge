@@ -65,6 +65,41 @@ def resolve_task(cfg, ident):
     sys.exit("找不到任务 %r。可选：\n%s" % (ident, ids))
 
 
+def _scorer_version(task):
+    """本条测量该记哪个 scorerVersion，返回 (取用值, 卡上声明值)。
+
+    优先级：`N7_SCORER_VERSION` 显式覆盖 > 任务卡 `evaluation.scorerVersion` > `"1.0"`。
+
+    为什么必须取卡上的值：qc 的难度闸按「条目 sv == 卡上 sv」判断判分器有没有改版，
+    不等就把这条测量当旧数字作废、级别降为「推定」。此前这里硬编码默认 `"1.0"`，于是凡
+    `evaluation.scorerVersion` 不是字面 `"1.0"` 的题（如 H3 的 `h3-1.0`），一次真金白银的
+    测量回填进卡当场被降级，而且只在「级别没变实测」这个弱信号上体现，极易漏掉。
+    """
+    card_sv = str(((task.card.get("evaluation") or {}).get("scorerVersion") or "")).strip()
+    return (os.environ.get("N7_SCORER_VERSION") or card_sv or "1.0"), card_sv
+
+
+def _scorer_version_selftest():
+    """scorerVersion 取值优先级：卡上值 > 兜底 1.0；环境变量可显式覆盖。"""
+    class _T:
+        def __init__(self, sv):
+            self.card = {"evaluation": {"scorerVersion": sv}} if sv is not None else {}
+
+    saved = os.environ.pop("N7_SCORER_VERSION", None)
+    try:
+        assert _scorer_version(_T("h3-1.0")) == ("h3-1.0", "h3-1.0"), "应取卡上的 h3-1.0"
+        assert _scorer_version(_T("  2.0  ")) == ("2.0", "2.0"), "卡上值应 strip"
+        assert _scorer_version(_T(None)) == ("1.0", ""), "卡未声明 → 兜底 1.0 且回报空"
+        assert _scorer_version(_T("")) == ("1.0", ""), "卡上为空 → 兜底 1.0"
+        os.environ["N7_SCORER_VERSION"] = "forced-9"
+        assert _scorer_version(_T("h3-1.0"))[0] == "forced-9", "环境变量应显式覆盖卡上值"
+    finally:
+        os.environ.pop("N7_SCORER_VERSION", None)
+        if saved is not None:
+            os.environ["N7_SCORER_VERSION"] = saved
+    print("[selftest] scorerVersion：取卡上值 / 兜底 1.0 / 环境变量可覆盖", file=sys.stderr)
+
+
 def _resolve_selftest(cfg):
     """resolve_task 的离线回归：空 / 不存在 / 多重匹配一律退出，唯一匹配才返回。"""
     import shutil
@@ -117,6 +152,15 @@ def write_card(task, entry):
         md = card["measuredDifficulty"] = []
     if not isinstance(md, list):
         return False, "卡上 measuredDifficulty 不是数组，拒绝改写：%s" % path
+    # 回填时再把 scorerVersion 对一遍：`--write-card --from <旧结果文件>` 会原样replay
+    # 文件里存的 entry，而旧文件可能是修复前跑的（硬编码 "1.0"）。不同就**响亮地报**，
+    # 不静默改——真有可能是判分器确实改版了，那该重测而不是替作者改数字。
+    card_sv = str(((card.get("evaluation") or {}).get("scorerVersion") or "")).strip()
+    ent_sv = str(entry.get("scorerVersion") or "").strip()
+    if card_sv and ent_sv and ent_sv != card_sv:
+        print("⚠️  本条测量 scorerVersion=%r 与卡上 %r 不一致：qc 会把它当「判分器已改版、"
+              "旧数字作废」而降为推定。要么重测，要么确认判分器未变后用 "
+              "N7_SCORER_VERSION=%s 重跑回填。" % (ent_sv, card_sv, card_sv), file=sys.stderr)
     if entry in md:
         return False, "完全相同的条目已在卡上，跳过"
     md.append(entry)
@@ -181,7 +225,16 @@ def main():
             sys.exit("用法：n7_run.py --write-card --from <N7_OUT 结果文件>")
         with open(sys.argv[i + 1], encoding="utf-8") as f:
             rep = json.load(f)
-        print(write_card(resolve_task(cfg, rep["task_id"]), rep["entry"])[1], file=sys.stderr)
+        entry = dict(rep["entry"])
+        # 旧结果文件可能是 scorerVersion 修复前跑的（硬编码 "1.0"）。允许用
+        # N7_SCORER_VERSION 显式重盖一次——必须人为确认"判分器真没改过"才该这么做，
+        # 所以只认显式环境变量，绝不自动按卡上值悄悄改写别人的测量数字。
+        forced = os.environ.get("N7_SCORER_VERSION")
+        if forced and str(entry.get("scorerVersion") or "") != forced:
+            print("· 按 N7_SCORER_VERSION 把本条 scorerVersion 由 %r 重盖为 %r"
+                  % (entry.get("scorerVersion"), forced), file=sys.stderr)
+            entry["scorerVersion"] = forced
+        print(write_card(resolve_task(cfg, rep["task_id"]), entry)[1], file=sys.stderr)
         return
     if selftest:
         cfg.llm.provider = "mock"   # 离线，不触网
@@ -197,6 +250,7 @@ def main():
     n_runs = int(os.environ.get("N7_RUNS", "2" if selftest else "10"))
     if selftest:
         _resolve_selftest(cfg)
+        _scorer_version_selftest()
     task = resolve_task(cfg, os.environ.get("N7_TASK", DEFAULT_TASK))
     if selftest:
         _write_card_selftest(task)
@@ -269,6 +323,11 @@ def main():
     full_pass = round(sum(1 for r in runs if r["passed"]) / n_ok, 4) if n_ok else None
     mean_score = round(sum(scores) / n_ok, 4) if n_ok else None
 
+    scorer_version, card_sv = _scorer_version(task)
+    if not card_sv:
+        print("⚠️  任务卡未声明 evaluation.scorerVersion，本条测量记为 %r；qc 的难度闸要求"
+              "两者相等，建议先把卡补上再测" % scorer_version, file=sys.stderr)
+
     # 判分契约 §6.2 形状：model/toolset/budget/scorerVersion/nRuns 必须钉住
     entry = {
         "model": cfg.llm.model,
@@ -282,7 +341,7 @@ def main():
                    "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools in ("python", "engine"))
                    else int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000")),
                    "wallClockMin": None},
-        "scorerVersion": os.environ.get("N7_SCORER_VERSION", "1.0"),
+        "scorerVersion": scorer_version,
         "nRuns": n_ok,
         "fullPassRate": full_pass,
         "meanScore": mean_score,
