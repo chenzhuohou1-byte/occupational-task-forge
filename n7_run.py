@@ -379,7 +379,9 @@ def main():
                    # 和材料完整，对考生是两道题。不记下来，两条测量就没法对照。
                    "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools in ("python", "engine"))
                    else int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000")),
-                   "wallClockMin": None},
+                    "wallClockMin": None,
+                    # 考生 run_python 的环境（解释器+可调软件）。None = 产线默认解释器、无外部软件
+                    "runtime": agentsolve.runtime()[3]},
         "scorerVersion": scorer_version,
         "nRuns": n_ok,
         "fullPassRate": full_pass,
