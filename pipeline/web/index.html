@@ -74,6 +74,7 @@
       <button onclick="loadBoard()">进度看板</button>
       <button onclick="toggleSelect()">选材(N1)</button>
       <button onclick="toggleForm()">＋ 造新任务</button>
+      <button onclick="toggleExecGuide()">可执行范式指引</button>
       <button onclick="toggleSettings()">⚙ 设置(LLM)</button>
     </div>
 
@@ -107,13 +108,62 @@
       <h3>造新任务（N3/N4 脚手架）</h3>
       <div class="meta">生成可跑骨架；生成后需去 assets/ 填真实附件与标准答案，QC 才会放行。<br>
       想让<b>模型自动起草</b>题面/交付/附件（不用手填），命令行跑：<code>python3 -m pipeline.cli build --subdomain "6.1"</code></div>
+      <div class="frow"><label>范式</label>
+        <select id="f_paradigm" onchange="onParadigm()">
+          <option value="numeric_tabular">数值/表格（交一组数，四档夹具）</option>
+          <option value="executable_artifact">可执行产物（交能跑的东西，真实工具链判分）</option>
+        </select></div>
       <div class="frow"><label>领域</label><input id="f_domain" placeholder="如 财务"></div>
       <div class="frow"><label>任务名</label><input id="f_name" placeholder="如 增值税进项核对"></div>
       <div class="frow"><label>task_id</label><input id="f_id" placeholder="如 caiwu-jinxiang-001"></div>
       <div class="frow"><label>题面 prompt</label><textarea id="f_prompt" rows="3" placeholder="像真实派活，不写步骤"></textarea></div>
       <div class="frow"><label>交付文件</label><input id="f_deliver" placeholder="逗号分隔，如 汇总.json,结果.csv"></div>
-      <div class="frow"><label>附件文件</label><input id="f_attach" placeholder="逗号分隔，如 进项票.csv,规则.md"></div>
+      <div class="frow" id="row_attach"><label>附件文件</label><input id="f_attach" placeholder="逗号分隔，如 进项票.csv,规则.md"></div>
+      <div id="execRows" style="display:none">
+        <div class="frow"><label>engine</label>
+          <select id="f_adapter">
+            <option value="container">container（交付脚本，docker 跑隐藏 case）</option>
+            <option value="flowable">flowable（交付 BPMN，真实引擎起实例）</option>
+          </select></div>
+        <div class="frow"><label>交付物文件名</label><input id="f_exec_deliver" placeholder="如 audit.py / modified_process.bpmn20.xml"></div>
+        <div class="frow"><label>材料来源</label>
+          <select id="f_srcclass">
+            <option value="real_derived">real_derived（真实源+构造覆盖层）</option>
+            <option value="real_public">real_public（真实源原样冻结）</option>
+            <option value="synthetic">synthetic（合成）</option>
+          </select></div>
+        <div class="frow"><label>自报交叉核对</label>
+          <select id="f_selfreport">
+            <option value="no">无自报（用 floor 地板负例）</option>
+            <option value="yes">有自报（必须给 faked_results 负例）</option>
+          </select></div>
+        <div class="meta">container 会自动带 <code>host_scorer: scripts/host_score.py</code>（答案不可见判分）与
+          <code>cases_dir/cases_manifest</code>；生成后按下方「可执行范式指引」的清单填 reference。</div>
+      </div>
       <div class="btns"><button class="primary" onclick="submitScaffold()">生成骨架</button></div>
+    </div>
+
+    <div class="card" id="execGuide" style="display:none">
+      <h3>可执行范式指引（executable_artifact）</h3>
+      <div class="meta">
+        交付物要在<b>真实工具链</b>上跑起来才算完成 → 走这条；只交一组数 → 走数值 <code>build-case</code>。<br>
+        <b>产线给</b>：骨架 + 判分编排 + 容器/引擎沙箱 + qc 闸 + N7 测难。
+        <b>你手工出</b>：spec、真实数据+provenance、cases/golden/negatives、host_score 打分口径。<br>
+        完整步骤见仓内 <code>docs/可执行范式-playbook.md</code>；样例 G1(flowable) / E1、H3(container)。
+      </div>
+      <ol style="margin:6px 0 6px 18px;padding:0;font-size:13px;line-height:1.7">
+        <li><b>① 写 spec</b>（手工）：用上面「造新任务」把范式选成<b>可执行产物</b>即可代填。</li>
+        <li><b>② 出骨架</b>：<code>python3 -m pipeline.cli scaffold --spec 你的spec.json</code>（或用表单）</li>
+        <li><b>③ 填 reference</b>（手工核心、无命令）：下面「查清单」逐项告诉你还差什么。</li>
+        <li><b>④ golden 自检</b>：<code>python3 main.py golden --out /tmp/g</code> 然后
+          <code>python3 main.py evaluate --output /tmp/g --reference assets/reference</code>（应 1.0）</li>
+        <li><b>⑤ 质检</b>：N6 + N8 + 难度分级，清单齐了可在下方一键跑。</li>
+        <li><b>⑥ 测难度</b>：便宜档 → 前沿档，<b>花钱、要几分钟</b>，命令见下方（刻意不做一键，防误触烧钱）。</li>
+      </ol>
+      <div class="frow"><label>task_id</label>
+        <input id="x_task" placeholder="如 h3-physionet-ecg-audit-001">
+        <button class="primary" onclick="execChecklist()">查清单</button></div>
+      <div id="execOut"></div>
     </div>
     <div class="status" id="status"></div>
     <div id="tasks"></div>
@@ -289,6 +339,46 @@ function toggleForm(){
   const f = $("scaffoldForm");
   f.style.display = f.style.display === "none" ? "block" : "none";
 }
+function toggleExecGuide(){
+  const f = $("execGuide");
+  f.style.display = f.style.display === "none" ? "block" : "none";
+}
+function onParadigm(){
+  const exec = $("f_paradigm").value === "executable_artifact";
+  $("execRows").style.display = exec ? "block" : "none";
+  $("row_attach").style.display = exec ? "none" : "flex";
+}
+async function execChecklist(){
+  const id = $("x_task").value.trim();
+  if (!id){ setStatus("先填 task_id"); return; }
+  setStatus("读清单…");
+  const r = await api("/api/exec_checklist?task_id=" + encodeURIComponent(id));
+  const out = $("execOut");
+  if (!r || r.error){
+    out.innerHTML = `<div class="bad">${escapeHtml((r && r.error) || "读不到该任务（task_id 对不对？ALE_TASKS_DIR 指对了吗？）")}</div>`;
+    setStatus("查清单失败"); return;
+  }
+  if (r["范式"] !== "executable_artifact"){
+    out.innerHTML = `<div class="bad">这条是 ${escapeHtml(r["范式"] || "非可执行")} 范式，不走这条线（数值范式用 build-case）。</div>`;
+    setStatus("范式不符"); return;
+  }
+  const rows = (r["清单"] || []).map(i => {
+    const mark = i["已填"] ? "✓" : (i["必需"] ? "✗" : "·");
+    const color = i["已填"] ? "#2e7d32" : (i["必需"] ? "#c62828" : "#888");
+    return `<tr><td style="color:${color};width:18px">${mark}</td>
+      <td style="white-space:nowrap">${escapeHtml(i["项"])}</td>
+      <td><code>${escapeHtml(i["路径"] || "")}</code></td>
+      <td style="color:#666">${escapeHtml(i["说明"] || "")}</td></tr>`;
+  }).join("");
+  out.innerHTML = `<div class="meta">adapter <b>${escapeHtml(r.adapter || "")}</b> ·
+      必需项 <b>${r["必需已填"]}/${r["必需合计"]}</b> ${r["可跑qc"] ? "（齐了）" : "（还差，见 ✗ 行）"}</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px"><tbody>${rows}</tbody></table>
+    <div class="btns"><button class="primary"${r["可跑qc"] ? "" : " disabled"}
+      onclick="qc('${escapeHtml(id)}')">⑤ 跑 qc（N6+N8+难度分级）</button></div>
+    <div class="meta">⑥ 测难度：去终端跑，<b>会花钱</b>（便宜档十跑约几元）——<br>
+      <code style="word-break:break-all">${escapeHtml(r["n7命令"] || "")}</code></div>`;
+  setStatus(r["可跑qc"] ? "③ 清单齐了，可以跑 qc" : "③ 还有必需项没填（✗ 行）");
+}
 
 let OCC = null;
 async function toggleSelect(){
@@ -374,22 +464,50 @@ async function saveConfig(){
 }
 function splitList(s){ return (s||"").split(/[,，]/).map(x=>x.trim()).filter(Boolean); }
 async function submitScaffold(){
+  const exec = $("f_paradigm").value === "executable_artifact";
   const deliver = {};
-  splitList($("f_deliver").value).forEach(fn => deliver[fn] = "交付文件");
+  if (exec){
+    const d = $("f_exec_deliver").value.trim() || splitList($("f_deliver").value)[0];
+    if (d) deliver[d] = "可执行交付物：须能在真实工具链上装载/执行";
+  } else {
+    splitList($("f_deliver").value).forEach(fn => deliver[fn] = "交付文件");
+  }
   const spec = {
     "领域": $("f_domain").value.trim(),
     "任务名": $("f_name").value.trim(),
     "task_id": $("f_id").value.trim() || ("auto-" + Date.now()),
     "prompt": $("f_prompt").value.trim(),
     "交付要求": deliver,
-    "附件计划": splitList($("f_attach").value),
   };
+  if (exec){
+    const adapter = $("f_adapter").value;
+    const d = Object.keys(deliver)[0] || "";
+    spec["范式"] = "executable_artifact";
+    spec["engine"] = {"adapter": adapter};
+    spec["selfReportCrossCheck"] = $("f_selfreport").value === "yes";
+    spec["材料来源"] = {"class": $("f_srcclass").value, "生成方式": "handmade"};
+    spec["task_meta"] = adapter === "container"
+      ? {"deliverable": d, "cases_dir": "assets/reference/cases",
+         "host_scorer": "scripts/host_score.py", "cases_manifest": "cases.json", "case_timeout": 60}
+      : {"bpmn_file": d, "cases_manifest": "test_scenarios.json"};
+  } else {
+    spec["附件计划"] = splitList($("f_attach").value);
+  }
   if (!spec["领域"] || !spec["任务名"] || !spec.prompt || !Object.keys(deliver).length){
     setStatus("请填写 领域/任务名/题面/至少一个交付文件"); return;
   }
   setStatus("生成骨架…");
   const r = await api("/api/scaffold","POST",{spec});
-  show(r); setStatus("已生成，去 assets/ 填数据后再 QC"); loadTasks();
+  show(r);
+  if (exec){
+    $("x_task").value = spec["task_id"];
+    $("execGuide").style.display = "block";
+    setStatus("骨架已生成。接下来是③手工填 reference —— 点「查清单」看还差什么");
+    execChecklist();
+  } else {
+    setStatus("已生成，去 assets/ 填数据后再 QC");
+  }
+  loadTasks();
 }
 
 function bar(label, ratio, valText){

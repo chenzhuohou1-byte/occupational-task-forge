@@ -31,8 +31,33 @@ from pipeline.config import PipelineConfig
 from pipeline.cost import CostTracker
 
 DEFAULT_TASK = "zaojia-biangeng-suopei-jiesuan-001"
-GATE = {"便宜档": ("== 0", lambda r: r == 0.0),
-        "前沿档": ("<= 1/3", lambda r: r <= 1.0 / 3 + 1e-9)}
+TIERS = ("便宜档", "前沿档")
+
+
+def tier_hint(tier, full_pass, n_runs):
+    """按契约 §6.3 刻度给「本档这次测量指向哪个级别」的即时提示，返回 (提示文本, 指向级别)。
+
+    2026-10-14 口径变更后**难度是标签、不是门槛**：便宜档满分就是合法的 L1，不再退回。
+    此前这里是一张写死的门槛表（便宜档 `== 0` 才算"过"、前沿档 `<= 1/3` 才算"过"），
+    于是 E1 便宜档 fpr=0.7 被打印成「不过 ✗」——而它其实是正常的 L1、qc 判可进库，纯误导。
+    阈值一律引用 qc 的常量，不再在这里复制一份口径；最终 tier 仍由 qc.difficulty_tier
+    按卡上 measuredDifficulty 重算，本提示只为跑完当场有个判断。
+    """
+    if tier == "便宜档":
+        if full_pass >= qc.L1_FLOOR:
+            return "→ L1（便宜模型就能做出来，前沿档不必跑）", "L1"
+        if full_pass > 0:
+            return "→ 便宜档 0 < fpr < 2/3：按契约只能给 L2 推定，要定死需补前沿档", "L2(推定)"
+        return "→ 便宜档 0 分：级别由前沿档切 L2/L3/L4，去跑前沿档", None
+    if full_pass <= qc.L4_CEIL:
+        t = "L4"
+    elif full_pass <= qc.L3_CEIL:
+        t = "L3"
+    else:
+        t = "L2"
+    short = "" if n_runs >= qc.FRONT_MIN_RUNS else (
+        "；但有效 run 只有 %d < %d，只能算推定，补足才算实测" % (n_runs, qc.FRONT_MIN_RUNS))
+    return "→ %s（ALE 刻度：≤10%% L4 / ≤30%% L3 / >30%% L2）%s" % (t, short), t
 
 
 def resolve_task(cfg, ident):
@@ -63,6 +88,54 @@ def resolve_task(cfg, ident):
                  % (ident, len(hits), "\n".join("  - %s  %s" % (t.task_id, t.dir) for t in hits)))
     ids = "\n".join("  - %s" % t.task_id for t in found)
     sys.exit("找不到任务 %r。可选：\n%s" % (ident, ids))
+
+
+def _tier_hint_selftest():
+    """分级提示对齐契约 §6.3 刻度：便宜档只切 L1，前沿档切 L2/L3/L4，跑数不足标推定。"""
+    assert tier_hint("便宜档", 0.7, 10)[1] == "L1", "便宜档 ≥2/3 → L1（E1 就是这档，旧门槛表会误报不过）"
+    assert tier_hint("便宜档", 2.0 / 3, 10)[1] == "L1", "正好 2/3 应算 L1"
+    assert tier_hint("便宜档", 0.3, 10)[1] == "L2(推定)", "0<fpr<2/3 → L2 推定"
+    assert tier_hint("便宜档", 0.0, 10)[1] is None, "便宜档 0 分 → 级别交给前沿档"
+    assert tier_hint("前沿档", 0.10, 10)[1] == "L4", "≤10% → L4（H3 就是这档）"
+    assert tier_hint("前沿档", 0.20, 10)[1] == "L3", "10–30% → L3"
+    assert tier_hint("前沿档", 0.50, 10)[1] == "L2", ">30% → L2"
+    assert "推定" in tier_hint("前沿档", 0.10, 3)[0], "前沿档跑数 <10 必须提示只能推定"
+    print("[selftest] 分级提示：便宜档切 L1 / 前沿档切 L2L3L4 / 跑数不足标推定", file=sys.stderr)
+
+
+def _scorer_version(task):
+    """本条测量该记哪个 scorerVersion，返回 (取用值, 卡上声明值)。
+
+    优先级：`N7_SCORER_VERSION` 显式覆盖 > 任务卡 `evaluation.scorerVersion` > `"1.0"`。
+
+    为什么必须取卡上的值：qc 的难度闸按「条目 sv == 卡上 sv」判断判分器有没有改版，
+    不等就把这条测量当旧数字作废、级别降为「推定」。此前这里硬编码默认 `"1.0"`，于是凡
+    `evaluation.scorerVersion` 不是字面 `"1.0"` 的题（如 H3 的 `h3-1.0`），一次真金白银的
+    测量回填进卡当场被降级，而且只在「级别没变实测」这个弱信号上体现，极易漏掉。
+    """
+    card_sv = str(((task.card.get("evaluation") or {}).get("scorerVersion") or "")).strip()
+    return (os.environ.get("N7_SCORER_VERSION") or card_sv or "1.0"), card_sv
+
+
+def _scorer_version_selftest():
+    """scorerVersion 取值优先级：卡上值 > 兜底 1.0；环境变量可显式覆盖。"""
+    class _T:
+        def __init__(self, sv):
+            self.card = {"evaluation": {"scorerVersion": sv}} if sv is not None else {}
+
+    saved = os.environ.pop("N7_SCORER_VERSION", None)
+    try:
+        assert _scorer_version(_T("h3-1.0")) == ("h3-1.0", "h3-1.0"), "应取卡上的 h3-1.0"
+        assert _scorer_version(_T("  2.0  ")) == ("2.0", "2.0"), "卡上值应 strip"
+        assert _scorer_version(_T(None)) == ("1.0", ""), "卡未声明 → 兜底 1.0 且回报空"
+        assert _scorer_version(_T("")) == ("1.0", ""), "卡上为空 → 兜底 1.0"
+        os.environ["N7_SCORER_VERSION"] = "forced-9"
+        assert _scorer_version(_T("h3-1.0"))[0] == "forced-9", "环境变量应显式覆盖卡上值"
+    finally:
+        os.environ.pop("N7_SCORER_VERSION", None)
+        if saved is not None:
+            os.environ["N7_SCORER_VERSION"] = saved
+    print("[selftest] scorerVersion：取卡上值 / 兜底 1.0 / 环境变量可覆盖", file=sys.stderr)
 
 
 def _resolve_selftest(cfg):
@@ -117,6 +190,15 @@ def write_card(task, entry):
         md = card["measuredDifficulty"] = []
     if not isinstance(md, list):
         return False, "卡上 measuredDifficulty 不是数组，拒绝改写：%s" % path
+    # 回填时再把 scorerVersion 对一遍：`--write-card --from <旧结果文件>` 会原样replay
+    # 文件里存的 entry，而旧文件可能是修复前跑的（硬编码 "1.0"）。不同就**响亮地报**，
+    # 不静默改——真有可能是判分器确实改版了，那该重测而不是替作者改数字。
+    card_sv = str(((card.get("evaluation") or {}).get("scorerVersion") or "")).strip()
+    ent_sv = str(entry.get("scorerVersion") or "").strip()
+    if card_sv and ent_sv and ent_sv != card_sv:
+        print("⚠️  本条测量 scorerVersion=%r 与卡上 %r 不一致：qc 会把它当「判分器已改版、"
+              "旧数字作废」而降为推定。要么重测，要么确认判分器未变后用 "
+              "N7_SCORER_VERSION=%s 重跑回填。" % (ent_sv, card_sv, card_sv), file=sys.stderr)
     if entry in md:
         return False, "完全相同的条目已在卡上，跳过"
     md.append(entry)
@@ -181,7 +263,16 @@ def main():
             sys.exit("用法：n7_run.py --write-card --from <N7_OUT 结果文件>")
         with open(sys.argv[i + 1], encoding="utf-8") as f:
             rep = json.load(f)
-        print(write_card(resolve_task(cfg, rep["task_id"]), rep["entry"])[1], file=sys.stderr)
+        entry = dict(rep["entry"])
+        # 旧结果文件可能是 scorerVersion 修复前跑的（硬编码 "1.0"）。允许用
+        # N7_SCORER_VERSION 显式重盖一次——必须人为确认"判分器真没改过"才该这么做，
+        # 所以只认显式环境变量，绝不自动按卡上值悄悄改写别人的测量数字。
+        forced = os.environ.get("N7_SCORER_VERSION")
+        if forced and str(entry.get("scorerVersion") or "") != forced:
+            print("· 按 N7_SCORER_VERSION 把本条 scorerVersion 由 %r 重盖为 %r"
+                  % (entry.get("scorerVersion"), forced), file=sys.stderr)
+            entry["scorerVersion"] = forced
+        print(write_card(resolve_task(cfg, rep["task_id"]), entry)[1], file=sys.stderr)
         return
     if selftest:
         cfg.llm.provider = "mock"   # 离线，不触网
@@ -197,6 +288,8 @@ def main():
     n_runs = int(os.environ.get("N7_RUNS", "2" if selftest else "10"))
     if selftest:
         _resolve_selftest(cfg)
+        _scorer_version_selftest()
+        _tier_hint_selftest()
     task = resolve_task(cfg, os.environ.get("N7_TASK", DEFAULT_TASK))
     if selftest:
         _write_card_selftest(task)
@@ -269,6 +362,11 @@ def main():
     full_pass = round(sum(1 for r in runs if r["passed"]) / n_ok, 4) if n_ok else None
     mean_score = round(sum(scores) / n_ok, 4) if n_ok else None
 
+    scorer_version, card_sv = _scorer_version(task)
+    if not card_sv:
+        print("⚠️  任务卡未声明 evaluation.scorerVersion，本条测量记为 %r；qc 的难度闸要求"
+              "两者相等，建议先把卡补上再测" % scorer_version, file=sys.stderr)
+
     # 判分契约 §6.2 形状：model/toolset/budget/scorerVersion/nRuns 必须钉住
     entry = {
         "model": cfg.llm.model,
@@ -281,10 +379,10 @@ def main():
                    # 和材料完整，对考生是两道题。不记下来，两条测量就没法对照。
                    "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools in ("python", "engine"))
                    else int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000")),
-                   "wallClockMin": None,
-                   # 考生 run_python 的环境（解释器+可调软件）。None = 产线默认解释器、无外部软件
-                   "runtime": agentsolve.runtime()[3]},
-        "scorerVersion": os.environ.get("N7_SCORER_VERSION", "1.0"),
+                    "wallClockMin": None,
+                    # 考生 run_python 的环境（解释器+可调软件）。None = 产线默认解释器、无外部软件
+                    "runtime": agentsolve.runtime()[3]},
+        "scorerVersion": scorer_version,
         "nRuns": n_ok,
         "fullPassRate": full_pass,
         "meanScore": mean_score,
@@ -304,13 +402,14 @@ def main():
     }
 
     # 门槛判定（§6.3）—— 只在给了 N7_TIER 时判
-    if tier in GATE and full_pass is not None:
-        desc, ok = GATE[tier]
-        report["_gate"] = {"tier": tier, "rule": "fullPassRate %s" % desc,
-                           "fullPassRate": full_pass, "pass": ok(full_pass)}
-        print("\n门槛[%s] fullPassRate %s → %s（实测 %.4f）"
-              % (tier, desc, "过" if ok(full_pass) else "不过 ✗", full_pass), file=sys.stderr)
-    elif tier and tier not in GATE:
+    if tier in TIERS and full_pass is not None:
+        hint, points_to = tier_hint(tier, full_pass, n_ok)
+        report["_tierHint"] = {"tier": tier, "fullPassRate": full_pass,
+                               "nRuns": n_ok, "指向": points_to}
+        print("\n分级提示[%s] fullPassRate=%.4f（%d 跑）%s"
+              "\n（难度是标签不是门槛；最终 tier 由 qc 按卡上 measuredDifficulty 重算）"
+              % (tier, full_pass, n_ok, hint), file=sys.stderr)
+    elif tier and tier not in TIERS:
         print("⚠️  N7_TIER=%r 不认识，只认 便宜档/前沿档" % tier, file=sys.stderr)
 
     out = os.environ.get("N7_OUT")

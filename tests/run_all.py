@@ -72,8 +72,13 @@ def main():
         _run("程序化地板自测", ["-m", "pipeline.floor"])[0],
         _run("agent 档动作循环自测", ["-m", "pipeline.agentsolve"])[0],
         _run("双实现交叉复算自测", ["-m", "pipeline.crosscheck", "--selftest"])[0],
-        _run("casegen 物化半段自测", ["-m", "pipeline.casegen", "--selftest"])[0],
-        _run("casegen 生成半段自测", ["-m", "pipeline.casegen_build", "--selftest"])[0],
+        # casegen 现在把模型代码放进 sandbox-exec worker 跑；CI(Linux) 无 sandbox-exec，
+        # 对这两条**可信**自测（跑 crosscheck_cases/good、非不可信模型产物）放行裸跑。
+        # mac 上 sandbox-exec 在场 → 该标志被忽略、仍走真沙箱，等于顺带测了沙箱路径。
+        _run("casegen 物化半段自测", ["-m", "pipeline.casegen", "--selftest"],
+             {"ALE_CASEGEN_UNSANDBOXED": "1"})[0],
+        _run("casegen 生成半段自测", ["-m", "pipeline.casegen_build", "--selftest"],
+             {"ALE_CASEGEN_UNSANDBOXED": "1"})[0],
         _run("N7 runner 控制流自测", ["n7_run.py", "--selftest"],
              {"ALE_TASKS_DIR": os.path.join(ROOT, "tasks"),
               "ALE_RUNS_DIR": os.path.join(ROOT, ".ci-runs"),

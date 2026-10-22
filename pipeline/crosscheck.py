@@ -17,6 +17,13 @@
 （顺序无关），**对象数组按行键对齐**（行键=每行第一个字段）。字段/行键集合不一致即不一致。
 
 退出码：全一致 0 / 有不一致（含断言破坏）1 / 案例不完整或 solve2 独立性可疑 2。
+
+安全边界（2026-10-20）：本模块的 `crosscheck()` 用 importlib 在**当前进程**执行案例的
+参数生成器/solve/solve2/断言——即模型写的代码。生产生成循环（`casegen_build`）已改为经
+`pipeline.sandbox` 的 sandbox-exec worker 调用它，模型代码在隔离进程里跑；但**直接命令行
+`python -m pipeline.crosscheck <案例目录>` 不走沙箱**，按纯开发工具对待：只在可信或自己把过关
+的案例上手动单跑，**切勿对不可信/刚由模型生成、未经审阅的案例手动单跑**（会以完整宿主权限
+执行，能读 .env、联网、写任意路径）。要安全地跑不可信案例，走产线（casegen_build）那条沙箱路径。
 """
 import argparse
 import importlib.util

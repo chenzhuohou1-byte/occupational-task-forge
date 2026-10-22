@@ -88,13 +88,22 @@ N1 选材 → N2a 事实核查(证据链) / N2b 口径裁定 → N3~5 起草 →
 
 逐节点输入/输出格式见 `八节点IO契约.md`。
 
+> 以上是**数值/表格范式**（`numeric_tabular`）。另有**可执行产物范式**（`executable_artifact`，
+> 契约 §9.5）：agent 交付能跑的产物，判分器在宿主侧真实工具链上执行、独立重算、不信任自报。
+> 代码在 `pipeline/executable/`（`runner` + `engines/{flowable,container}` 适配器 + `engine_sandbox`
+> 一次性引擎沙箱 + `selftest` 受限自测）；夹具是 `golden/` + `negatives/`（见 G1/E1/H3）。
+
+> **不可信代码一律进沙箱**：N7 的 `run_python` 与 casegen 里模型写的 参数生成器/solve/物化 都走
+> `sandbox.py` 的 `sandbox-exec`（无网、读不了 `~`/`.env`、只许写工作目录），没沙箱就拒跑；
+> 可信离线自测可设 `ALE_CASEGEN_UNSANDBOXED=1`。可执行范式候选跑在容器里、引擎自测起一次性沙箱。
+
 ## CLI 命令
 
 | 命令 | 作用 |
 |---|---|
 | `list` | 列出所有任务 |
 | `run <任务> --solver golden\|neg\|empty` | 跑单任务并打印判分 |
-| `qc [<任务>\|--all]` | N6 三道校验 + N8 地板审计 |
+| `qc [<任务>\|--all]` | N6 三道校验 + N8 地板审计 + 难度分级（tier） |
 | `blind [<任务>\|--all]` | N7 盲解（用 LLM 当考生，估基线通过率） |
 | `build --subdomain "<ALE 子域 id>" [--faces N]` | N1 选材 → N3~5 起草 → 落成骨架 |
 | `scaffold --spec <spec.json>` | 从 spec 生成任务骨架 |
@@ -169,8 +178,9 @@ python3 -m pipeline.attachments_selftest                     # 自测：六格�
 - 依赖：Python 3.9+，纯标准库；真实网关调用建议装 `certifi`（证书）。
 - N4 造附件要出真 xlsx/pdf 时需 `openpyxl`/`reportlab`，且只经 `KW数据构造_通用工具/kw_*`
   调用（目录位置可用 `KW_TOOLS_DIR` 覆盖）；缺了照跑，那几份附件记进 `errors[]`。
-- 边界：本产线是**打样 Demo**——只做办公文档形态（Excel/Word/PDF/文本，读文件比数值），
-  不碰 GUI/商业软件/大规模数据；成本为粗估。生产级扩量属二期。
+- 边界：数值/表格范式做办公文档形态（Excel/Word/PDF/文本，读文件比数值）；**可执行范式**
+  （§9.5）则把候选产物部署到真实工具链（Flowable 引擎 / 容器）动态判分，已超出纯文档形态。
+  成本为粗估。2026-10-14 起本产线从打样 Demo 转入生产（目标 500 条 ALE 高仿数据集）。
 
 ## 架构图
 
