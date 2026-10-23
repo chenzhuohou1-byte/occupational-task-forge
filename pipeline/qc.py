@@ -15,10 +15,15 @@ from . import harness
 CHEAP_MODEL = "glm-5.3-flash"           # 便宜档基准模型（measuredDifficulty.model 的小写形式）
 FRONTIER_MODEL = "claude sonnet 5.5"    # 前沿档基准模型（网关实收名，见契约 §6.3）
 L1_FLOOR = 2.0 / 3 - 1e-9               # 便宜档满分率 ≥ 2/3 → L1（便宜档只用来切这一刀）
-# 前沿档两刀按 ALE 论文的严格通过率刻度（§6.3）：最难层 Last-Exam 0–9%、全谱层 Full-Spectrum 13–20%
-L4_CEIL = 0.10 + 1e-9                   # 前沿档满分率 ≤ 10% → L4（≈ ALE Last-Exam）
-L3_CEIL = 0.30 + 1e-9                   # 前沿档满分率 ≤ 30% → L3（≈ ALE Full-Spectrum）
-FRONT_MIN_RUNS = 10                     # 前沿档要切 10% / 30% 两刀，3 跑的分辨率（⅓）不够
+# 第三版口径（2026-10-22，侯雅婷定表）：便宜档满分率是主轴，前沿档只做细分。
+#   L1 便宜档 ≥ 2/3（前沿档不必跑）
+#   L2 便宜档 0 < fpr < 2/3，前沿档 = 1
+#   L3 便宜档 = 0，前沿档 > 1/3
+#   L4 便宜档 = 0，前沿档 ≤ 1/3
+# 关键：便宜档 = 0 不能再落 L2——以前的 >30%→L2 会把「便宜档全挂、前沿档很高」误标成 L2。
+L2_FRONT_FULL = 1.0 - 1e-9              # L2 期望前沿档满分率 = 1（便宜档 0<fpr<2/3 时）
+FRONT_L3_MIN = 1.0 / 3                  # 便宜档=0 时：前沿档满分率 > 1/3 → L3，否则 L4
+FRONT_MIN_RUNS = 10                     # 便宜档=0 要切 1/3 这一刀，3 跑的分辨率（⅓ 本身就在刀口）不够
 PURPOSES = ("训练集", "测试集")
 # §3 材料来源两轴（2026-10-20）。两轴而非一个枚举：H3 是真实源**加**显式构造覆盖层、
 # G1 是合成但手工造、casegen 产的是合成且自动造 —— 一个枚举装不下，混在一起会让
@@ -480,19 +485,23 @@ def _md_row(e):
 
 
 def difficulty_tier(task):
-    """§6.3 难度分级（2026-10-16 第二版：前沿档按 ALE 刻度切）。
+    """§6.3 难度分级（2026-10-22 第三版：便宜档满分率为主轴，侯雅婷定表）。
 
     难度只是标签、不参与进库判定（§8）；质量闸门 N6/N8 一条没放松。
+    **按满分率（fullPassRate）打标签，不看平均分**——平均分会把「一次都没打满但
+    每次都拿一半分」的题算高，和能不能做出来是两回事。
 
-    为什么改第二版：能跑代码之后（agent-file-python），便宜档几乎只剩两种结果——
-    ≥0.98 或 0，3 跑的满分率在 0/⅓/⅔/1 之间跳，用它切 L2|L3 等于在量噪声。所以
-    **便宜档只用来认出 L1**，L2–L4 由前沿档满分率定，门槛对齐 ALE 论文的严格通过率：
-      便宜档 fpr ≥ 2/3                 → L1 入门（前沿档不必跑）
-      否则看前沿档 fpr：  > 30%         → L2 基础（≈ ALE Near-Term 及更易）
-                         10% < f ≤ 30% → L3 进阶（≈ ALE Full-Spectrum）
-                         ≤ 10%         → L4 困难（≈ ALE Last-Exam）
-    缺前沿档时给推定级：便宜档 = 0 → `L3+`；0 < 便宜档 < 2/3 → `L2`（前沿档几乎必然更高）。
-    前沿档 nRuns < 10 也只给推定级：要切 10% / 30% 两刀，3 跑的分辨率不够。
+    口径（便宜档 = glm-5.3-flash，前沿档 = claude sonnet 5.5）：
+      便宜档满分率 ≥ 2/3                        → L1 入门（前沿档不必跑）
+      便宜档 0 < fpr < 2/3，前沿档满分率 = 1     → L2 基础
+      便宜档 = 0，前沿档满分率 > 1/3             → L3 进阶
+      便宜档 = 0，前沿档满分率 ≤ 1/3             → L4 困难
+    为什么第三版废掉旧的「前沿档 >30%→L2」：便宜档全挂（=0）说明便宜模型根本做不出，
+    这类题最低也是 L3；旧刻度会把「便宜档=0、前沿档 0.9」误判成 L2，把难题标成基础题。
+    便宜档非 0（0<fpr<2/3）才是 L2——便宜模型偶尔能做出来、前沿档稳定做出来。
+
+    缺前沿档时给推定级：便宜档 = 0 → `L3+`（L3/L4 分不开）；0 < 便宜档 < 2/3 → `L2`。
+    便宜档 = 0 时前沿档 nRuns < 10 也只给推定级：1/3 这一刀正落在 3 跑的分辨率刀口上。
 
     返回 `(可判定?, 明细)`。可判定只要求有一条当前判分器下的 agent 档便宜档测量；
     连这个都没有＝未测，**未测不是 L1**（水题也得测出来才算水题）。
@@ -519,18 +528,28 @@ def difficulty_tier(task):
     hedge = []
     if cfpr >= L1_FLOOR:
         tier, note = "L1", "便宜档满分率 %.4f ≥ 2/3：便宜模型就能做出来，前沿档不必跑" % cfpr
+    elif cfpr > 0:
+        # 便宜档偶尔能做出来 → L2。表里 L2 期望前沿档 = 1；前沿档没跑给推定级，
+        # 跑了但 < 1 仍判 L2（便宜档非 0 已把它锚在 L2），但标注与表不符、建议复核。
+        tier = "L2"
+        if not isinstance(ffpr, (int, float)):
+            note = "0 < 便宜档满分率 %.4f < 2/3：锚定 L2；缺前沿档测量，按表期望前沿档=1" % cfpr
+            hedge.append("缺前沿档：%s" % front_why)
+        elif ffpr >= L2_FRONT_FULL:
+            note = "0 < 便宜档满分率 %.4f < 2/3 且前沿档满分率 %.4f = 1 → L2" % (cfpr, ffpr)
+        else:
+            note = "0 < 便宜档满分率 %.4f < 2/3 → L2；前沿档满分率 %.4f < 1 与表期望不符" % (cfpr, ffpr)
+            hedge.append("前沿档满分率 %.4f < 1，L2 表期望前沿档=1，建议复核前沿档测量" % ffpr)
     elif isinstance(ffpr, (int, float)):
-        tier = "L4" if ffpr <= L4_CEIL else ("L3" if ffpr <= L3_CEIL else "L2")
-        note = "便宜档 %.4f < 2/3；前沿档满分率 %.4f（mean %s）→ %s（ALE 刻度：≤10%% L4 / ≤30%% L3）" % (
-            cfpr, ffpr, front.get("meanScore"), tier)
+        # 便宜档 = 0：前沿档 > 1/3 → L3，否则 L4
+        tier = "L3" if ffpr > FRONT_L3_MIN + 1e-9 else "L4"
+        note = "便宜档满分率 = 0；前沿档满分率 %.4f（mean %s）%s 1/3 → %s" % (
+            ffpr, front.get("meanScore"), ">" if tier == "L3" else "≤", tier)
         fn = front.get("nRuns") or 0
         if fn < FRONT_MIN_RUNS:
-            hedge.append("前沿档 nRuns=%d < %d，切不开 10%%/30%% 两刀，需补跑" % (fn, FRONT_MIN_RUNS))
-    elif cfpr > 0:
-        tier, note = "L2", "0 < 便宜档满分率 %.4f < 2/3，缺前沿档：前沿档几乎必然更高，推定 L2" % cfpr
-        hedge.append("缺前沿档：%s" % front_why)
+            hedge.append("前沿档 nRuns=%d < %d，1/3 这一刀切不准，需补跑" % (fn, FRONT_MIN_RUNS))
     else:
-        tier, note = "L3+", "便宜档满分率 = 0，缺当前前沿档 agent 测量，L2/L3/L4 分不开"
+        tier, note = "L3+", "便宜档满分率 = 0，缺当前前沿档 agent 测量，L3/L4 分不开（最低 L3）"
         hedge.append("缺前沿档：%s" % front_why)
 
     # 擦线补跑：便宜档 3 跑只能落在 0/⅓/⅔/1，L1|L2 边界恰在 ⅔ 上，擦线的题靠运气落级

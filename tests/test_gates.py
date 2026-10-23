@@ -49,7 +49,7 @@ def tier_of(entries, **kw):
 
 
 def test_tiers():
-    print("难度分级（契约 §6.3 第二版：便宜档只认 L1，前沿档按 ALE 刻度切）")
+    print("难度分级（契约 §6.3 第三版：便宜档满分率为主轴，便宜档=0 时前沿档以 1/3 切 L3/L4）")
     CHEAP, FRONT = "glm-5.3-flash", "Claude Sonnet 5.5"
 
     ok, t, src, _ = tier_of([md(CHEAP, 1.0)])
@@ -57,7 +57,7 @@ def test_tiers():
 
     ok, t, src, d = tier_of([md(CHEAP, 1.0 / 3)])
     check((ok, t, src) == (True, "L2", "推定") and d.get("待补"),
-          "便宜档 fpr=1/3、缺前沿档 → L2 推定（便宜档不再单独定 L2）")
+          "便宜档 fpr=1/3、缺前沿档 → L2 推定（0<便宜档<2/3 锚定 L2）")
 
     ok, t, src, d = tier_of([md(CHEAP, 2.0 / 3)])
     check((ok, t, src) == (True, "L1", "推定") and d.get("待补"),
@@ -66,17 +66,24 @@ def test_tiers():
     ok, t, src, _ = tier_of([md(CHEAP, 2.0 / 3, n=6)])
     check((ok, t, src) == (True, "L1", "实测"), "同上但补到 6 跑 → L1 实测")
 
-    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.8, n=10)])
-    check((ok, t, src) == (True, "L2", "实测"), "便宜档 0 + 前沿档 80% > 30% → L2（≈ ALE 最易层）")
+    ok, t, src, _ = tier_of([md(CHEAP, 1.0 / 3, n=6), md(FRONT, 1.0, n=10)])
+    check((ok, t, src) == (True, "L2", "实测"), "便宜档 0<1/3<2/3 + 前沿档=1 → L2 实测（表定义的 L2）")
 
-    ok, t, src, _ = tier_of([md(CHEAP, 1.0 / 3), md(FRONT, 0.2, n=10)])
-    check((ok, t, src) == (True, "L3", "实测"), "前沿档 20%（10%–30%）→ L3，便宜档非 0 也不挡")
+    ok, t, src, d = tier_of([md(CHEAP, 1.0 / 3, n=6), md(FRONT, 0.2, n=10)])
+    check((ok, t, src) == (True, "L2", "推定") and "前沿档" in str(d.get("待补")),
+          "便宜档非 0 锚定 L2，但前沿档 0.2 < 1 与表期望不符 → L2 推定、记复核")
 
-    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.3, n=10)])
-    check((ok, t, src) == (True, "L3", "实测"), "前沿档正好 30% → L3（边界含）")
+    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.9, n=10)])
+    check((ok, t, src) == (True, "L3", "实测"), "便宜档 0 + 前沿档 0.9 > 1/3 → L3（H9 就是这档，旧刻度会误判 L2）")
+
+    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 1.0, n=10)])
+    check((ok, t, src) == (True, "L3", "实测"), "便宜档 0 + 前沿档=1 → L3（H4 就是这档，便宜档=0 永不落 L2）")
+
+    ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 1.0 / 3, n=10)])
+    check((ok, t, src) == (True, "L4", "实测"), "便宜档 0 + 前沿档正好 1/3（不 >1/3）→ L4")
 
     ok, t, src, _ = tier_of([md(CHEAP, 0.0), md(FRONT, 0.1, n=10)])
-    check((ok, t, src) == (True, "L4", "实测"), "前沿档正好 10% → L4（边界含）")
+    check((ok, t, src) == (True, "L4", "实测"), "便宜档 0 + 前沿档 0.1 ≤ 1/3 → L4（H3 就是这档）")
 
     ok, t, src, d = tier_of([md(CHEAP, 0.0), md(FRONT, 0.0, n=3)])
     check((ok, t, src) == (True, "L4", "推定") and "nRuns" in str(d.get("待补")),

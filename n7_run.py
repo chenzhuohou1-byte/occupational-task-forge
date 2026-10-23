@@ -38,8 +38,8 @@ def tier_hint(tier, full_pass, n_runs):
     """按契约 §6.3 刻度给「本档这次测量指向哪个级别」的即时提示，返回 (提示文本, 指向级别)。
 
     2026-10-14 口径变更后**难度是标签、不是门槛**：便宜档满分就是合法的 L1，不再退回。
-    此前这里是一张写死的门槛表（便宜档 `== 0` 才算"过"、前沿档 `<= 1/3` 才算"过"），
-    于是 E1 便宜档 fpr=0.7 被打印成「不过 ✗」——而它其实是正常的 L1、qc 判可进库，纯误导。
+    2026-10-22 第三版口径（侯雅婷定表）：便宜档满分率为主轴——便宜档=0 最低 L3、不能落 L2；
+    L2 必须便宜档 0<fpr<2/3；便宜档=0 时前沿档以 1/3 为界切 L3(>1/3)/L4(≤1/3)。
     阈值一律引用 qc 的常量，不再在这里复制一份口径；最终 tier 仍由 qc.difficulty_tier
     按卡上 measuredDifficulty 重算，本提示只为跑完当场有个判断。
     """
@@ -47,17 +47,16 @@ def tier_hint(tier, full_pass, n_runs):
         if full_pass >= qc.L1_FLOOR:
             return "→ L1（便宜模型就能做出来，前沿档不必跑）", "L1"
         if full_pass > 0:
-            return "→ 便宜档 0 < fpr < 2/3：按契约只能给 L2 推定，要定死需补前沿档", "L2(推定)"
-        return "→ 便宜档 0 分：级别由前沿档切 L2/L3/L4，去跑前沿档", None
-    if full_pass <= qc.L4_CEIL:
-        t = "L4"
-    elif full_pass <= qc.L3_CEIL:
+            return "→ 便宜档 0 < fpr < 2/3：按表定 L2，前沿档应 = 1 作确认", "L2(推定)"
+        return "→ 便宜档 0 分：便宜模型做不出，最低 L3；由前沿档切 L3/L4，去跑前沿档", None
+    # 前沿档：只有便宜档=0 时才用它切级，1/3 为界
+    if full_pass > qc.FRONT_L3_MIN + 1e-9:
         t = "L3"
     else:
-        t = "L2"
+        t = "L4"
     short = "" if n_runs >= qc.FRONT_MIN_RUNS else (
         "；但有效 run 只有 %d < %d，只能算推定，补足才算实测" % (n_runs, qc.FRONT_MIN_RUNS))
-    return "→ %s（ALE 刻度：≤10%% L4 / ≤30%% L3 / >30%% L2）%s" % (t, short), t
+    return "→ %s（便宜档=0 前提下：前沿档 >1/3 L3 / ≤1/3 L4）%s" % (t, short), t
 
 
 def resolve_task(cfg, ident):
@@ -91,16 +90,18 @@ def resolve_task(cfg, ident):
 
 
 def _tier_hint_selftest():
-    """分级提示对齐契约 §6.3 刻度：便宜档只切 L1，前沿档切 L2/L3/L4，跑数不足标推定。"""
-    assert tier_hint("便宜档", 0.7, 10)[1] == "L1", "便宜档 ≥2/3 → L1（E1 就是这档，旧门槛表会误报不过）"
+    """分级提示对齐契约 §6.3 第三版：便宜档切 L1/L2、便宜档=0 时前沿档以 1/3 切 L3/L4。"""
+    assert tier_hint("便宜档", 0.7, 10)[1] == "L1", "便宜档 ≥2/3 → L1（E1 就是这档）"
     assert tier_hint("便宜档", 2.0 / 3, 10)[1] == "L1", "正好 2/3 应算 L1"
     assert tier_hint("便宜档", 0.3, 10)[1] == "L2(推定)", "0<fpr<2/3 → L2 推定"
     assert tier_hint("便宜档", 0.0, 10)[1] is None, "便宜档 0 分 → 级别交给前沿档"
-    assert tier_hint("前沿档", 0.10, 10)[1] == "L4", "≤10% → L4（H3 就是这档）"
-    assert tier_hint("前沿档", 0.20, 10)[1] == "L3", "10–30% → L3"
-    assert tier_hint("前沿档", 0.50, 10)[1] == "L2", ">30% → L2"
+    assert tier_hint("前沿档", 0.9, 10)[1] == "L3", ">1/3 → L3（H9 便宜档=0、前沿档0.9 就是这档）"
+    assert tier_hint("前沿档", 0.40, 10)[1] == "L3", ">1/3 → L3"
+    assert tier_hint("前沿档", 1.0 / 3, 10)[1] == "L4", "正好 1/3 不算 >1/3 → L4"
+    assert tier_hint("前沿档", 0.30, 10)[1] == "L4", "≤1/3 → L4"
+    assert tier_hint("前沿档", 0.10, 10)[1] == "L4", "≤1/3 → L4（H3 就是这档）"
     assert "推定" in tier_hint("前沿档", 0.10, 3)[0], "前沿档跑数 <10 必须提示只能推定"
-    print("[selftest] 分级提示：便宜档切 L1 / 前沿档切 L2L3L4 / 跑数不足标推定", file=sys.stderr)
+    print("[selftest] 分级提示：便宜档切 L1L2 / 便宜档=0 时前沿档 1/3 切 L3L4 / 跑数不足标推定", file=sys.stderr)
 
 
 def _scorer_version(task):
