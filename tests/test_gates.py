@@ -86,6 +86,21 @@ def test_tiers():
     check((ok, t, src) == (True, "L3+", "推定"),
           "便宜档 0、缺前沿档 → 推定级 L3+（不是未测）")
 
+    # 只有前沿档（2026-10-23）：冲 L3/L4 的新题跳过便宜档
+    ok, t, src, _ = tier_of([md(FRONT, 0.0, n=10)])
+    check((ok, t, src) == (True, "L4", "实测"), "只有前沿档 0/10 → L4 实测（便宜档不会强过前沿档）")
+
+    ok, t, src, _ = tier_of([md(FRONT, 0.2, n=10)])
+    check((ok, t, src) == (True, "L3", "实测"), "只有前沿档 20% → L3 实测")
+
+    ok, t, src, d = tier_of([md(FRONT, 0.9, n=10)])
+    check((ok, t, src) == (True, "L2", "推定") and "便宜档" in str(d.get("待补")),
+          "只有前沿档 90% → 推定 L2，提示补便宜档切 L1|L2")
+
+    ok, t, src, d = tier_of([md(FRONT, 0.0, n=3)])
+    check((ok, t, src) == (True, "L4", "推定") and "nRuns" in str(d.get("待补")),
+          "只有前沿档且不足 10 跑 → 推定")
+
 
 def test_tier_rejects():
     print("难度分级：不算数的测量条目（三条规矩一个字没放松）")

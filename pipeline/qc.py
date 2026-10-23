@@ -494,8 +494,9 @@ def difficulty_tier(task):
     缺前沿档时给推定级：便宜档 = 0 → `L3+`；0 < 便宜档 < 2/3 → `L2`（前沿档几乎必然更高）。
     前沿档 nRuns < 10 也只给推定级：要切 10% / 30% 两刀，3 跑的分辨率不够。
 
-    返回 `(可判定?, 明细)`。可判定只要求有一条当前判分器下的 agent 档便宜档测量；
-    连这个都没有＝未测，**未测不是 L1**（水题也得测出来才算水题）。
+    返回 `(可判定?, 明细)`。可判定要求至少有一条当前判分器下的 agent 档测量（便宜档或前沿档）；
+    都没有＝未测，**未测不是 L1**（水题也得测出来才算水题）。
+    只有前沿档（2026-10-23 起允许）：≤30% 直接定 L3/L4；>30% 推定 L2，补便宜档才能切 L1|L2。
     """
     base = {"task_id": task.task_id, "tier": None, "级别来源": "未测", "可判定": False}
     md = task.card.get("measuredDifficulty")
@@ -511,12 +512,32 @@ def difficulty_tier(task):
             "便宜档": _md_row(cheap) if cheap else {"缺": cheap_why},
             "前沿档": _md_row(front) if front else {"缺": front_why}}
     cfpr = cheap.get("fullPassRate") if cheap else None
-    if not isinstance(cfpr, (int, float)):
-        return False, {**base, "说明": "定不了级：缺便宜档 agent 测量 —— %s。"
-                                       "补一次便宜档 agent 跑（约 0.35 元）即可定级" % cheap_why}
-
     ffpr = front.get("fullPassRate") if front else None
+    if not isinstance(cfpr, (int, float)) and not isinstance(ffpr, (int, float)):
+        return False, {**base, "说明": "定不了级：便宜档、前沿档都没有当前 agent 档测量 —— 便宜档：%s；"
+                                       "前沿档：%s" % (cheap_why, front_why)}
+
     hedge = []
+    if not isinstance(cfpr, (int, float)):
+        # 只有前沿档（2026-10-23）：冲 L3/L4 的新题直接上前沿档。便宜档只用来认 L1，
+        # 前沿档 ≤30% 时便宜档不可能 ≥2/3，L1 排除得掉，不缺信息；前沿档 >30% 才需要
+        # 便宜档来切 L1|L2，此时给推定 L2 并提示补便宜档。
+        fn = front.get("nRuns") or 0
+        if ffpr > L3_CEIL:
+            tier, note = "L2", ("只有前沿档，满分率 %.4f > 30%%：L1|L2 要靠便宜档切，推定 L2" % ffpr)
+            hedge.append("缺便宜档：%s（补 3 跑即可切 L1|L2）" % cheap_why)
+        else:
+            tier = "L4" if ffpr <= L4_CEIL else "L3"
+            note = ("只有前沿档，满分率 %.4f（mean %s）→ %s；便宜档不会强过前沿档，L1 已排除"
+                    % (ffpr, front.get("meanScore"), tier))
+        if fn < FRONT_MIN_RUNS:
+            hedge.append("前沿档 nRuns=%d < %d，切不开 10%%/30%% 两刀，需补跑" % (fn, FRONT_MIN_RUNS))
+        if str(front.get("toolset")) == LEGACY_AGENT_TOOLSET:
+            hedge.append("前沿档是旧考法 agent-file-tools（不能跑代码，偏硬），需按 %s 重测" % AGENT_TOOLSET)
+        src = "推定" if hedge else "实测"
+        return True, {**base, "tier": tier, "级别来源": src, "可判定": True,
+                      "说明": note, **({"待补": hedge} if hedge else {})}
+
     if cfpr >= L1_FLOOR:
         tier, note = "L1", "便宜档满分率 %.4f ≥ 2/3：便宜模型就能做出来，前沿档不必跑" % cfpr
     elif isinstance(ffpr, (int, float)):

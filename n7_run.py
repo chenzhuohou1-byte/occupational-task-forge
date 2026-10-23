@@ -103,6 +103,51 @@ def _tier_hint_selftest():
     print("[selftest] 分级提示：便宜档切 L1 / 前沿档切 L2L3L4 / 跑数不足标推定", file=sys.stderr)
 
 
+RESUME_KEYS = ("model", "toolset", "budget", "scorerVersion")
+
+
+def _load_resume(path, task_id, entry):
+    """读 N7_OUT 里的半截结果，返回 (runs, errors, 已完成槽位数, 已花费)。
+
+    口径（model/toolset/budget/scorerVersion）任一项不同就拒绝续跑：拼起来的数字不可比。
+    """
+    with open(path, encoding="utf-8") as f:
+        rep = json.load(f)
+    if rep.get("task_id") != task_id:
+        sys.exit("N7_RESUME：%s 是任务 %r 的结果，不是 %r" % (path, rep.get("task_id"), task_id))
+    old = rep.get("entry") or {}
+    diff = [k for k in RESUME_KEYS if old.get(k) != entry.get(k)]
+    if diff:
+        sys.exit("N7_RESUME：%s 的测量口径与本次不同（%s），不能拼接；换个 N7_OUT 重跑"
+                 % (path, "、".join(diff)))
+    runs = list(rep.get("_perRun") or [])
+    return (runs, list(rep.get("_errors") or []),
+            int(rep.get("_slotsDone", len(runs))), float(rep.get("_costRMB") or 0))
+
+
+def _resume_selftest():
+    """续跑只接同口径的半截结果；口径不同必须拒绝。"""
+    import tempfile
+    e = {"model": "m", "toolset": "agent-file-python", "budget": {"maxSteps": 20}, "scorerVersion": "1.0"}
+    fd, p = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"task_id": "t", "entry": e, "_slotsDone": 3, "_costRMB": 1.5,
+                       "_perRun": [{"score": 1.0, "passed": True}] * 2, "_errors": ["x"]}, f)
+        runs, errs, done, c = _load_resume(p, "t", dict(e))
+        assert (len(runs), len(errs), done, c) == (2, 1, 3, 1.5), "续跑应原样接回槽位/逐跑/花费"
+        try:
+            _load_resume(p, "t", {**e, "budget": {"maxSteps": 40}})
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("预算不同也被续跑了")
+    finally:
+        os.remove(p)
+    print("[selftest] 续跑：同口径接回、口径不同拒绝", file=sys.stderr)
+
+
 def _scorer_version(task):
     """本条测量该记哪个 scorerVersion，返回 (取用值, 卡上声明值)。
 
@@ -290,6 +335,7 @@ def main():
         _resolve_selftest(cfg)
         _scorer_version_selftest()
         _tier_hint_selftest()
+        _resume_selftest()
     task = resolve_task(cfg, os.environ.get("N7_TASK", DEFAULT_TASK))
     if selftest:
         _write_card_selftest(task)
@@ -307,10 +353,74 @@ def main():
     client = llm.get_client(cfg.llm)
     cost = CostTracker()
 
+    out = os.environ.get("N7_OUT")
     runs, errors = [], []
     gap = float(os.environ.get("ALE_LLM_INTER_RUN_SLEEP", "0"))
     fault_retry = int(os.environ.get("N7_FAULT_RETRY", "2"))   # 每个槽位遇测量故障最多补跑几次
     trace_base = _trace_base(cfg, task, mode)
+
+    scorer_version, card_sv = _scorer_version(task)
+    if not card_sv:
+        print("⚠️  任务卡未声明 evaluation.scorerVersion，本条测量记为 %r；qc 的难度闸要求"
+              "两者相等，建议先把卡补上再测" % scorer_version, file=sys.stderr)
+
+    # 判分契约 §6.2 形状：model/toolset/budget/scorerVersion/nRuns 必须钉住
+    def _entry():
+        n_ok = len(runs)
+        scores = [r["score"] for r in runs]
+        return {
+            "model": cfg.llm.model,
+            # 换工具数字就不可比（§6.2）：单发盲解 vs 多步带文件工具是两种考法
+            "toolset": "single-shot-blind" if mode == "blind" else agentsolve.TOOLSETS[tools],
+            "budget": {"maxSteps": 1 if mode == "blind" else max_steps,
+                       "maxTokens": int(os.environ.get("ALE_LLM_MAX_TOKENS", "16000")),
+                       "reasoningEffort": os.environ.get("ALE_LLM_REASONING_EFFORT", "") or None,
+                       # 附件单文件读取上限也是「换了就不可比」的一项（§6.4）：材料被截断过
+                       # 和材料完整，对考生是两道题。不记下来，两条测量就没法对照。
+                       "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools in ("python", "engine"))
+                       else int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000")),
+                        "wallClockMin": None,
+                        # 考生 run_python 的环境（解释器+可调软件）。None = 产线默认解释器、无外部软件
+                        "runtime": agentsolve.runtime()[3]},
+            "scorerVersion": scorer_version,
+            "nRuns": n_ok,
+            "fullPassRate": round(sum(1 for r in runs if r["passed"]) / n_ok, 4) if n_ok else None,
+            "meanScore": round(sum(scores) / n_ok, 4) if n_ok else None,
+            "measuredAt": datetime.date.today().isoformat(),
+        }
+
+    # 断点续跑（N7_RESUME=1）：N7_OUT 里已有同一口径的逐跑结果就接着跑，不重花钱。
+    # 每跑完一个槽位都落盘一次（_partial=true），进程被杀也只丢正在跑的那一次。
+    slots_done, prev_cost = 0, 0.0
+    if os.environ.get("N7_RESUME") == "1" and out and os.path.isfile(out):
+        runs, errors, slots_done, prev_cost = _load_resume(out, task.task_id, _entry())
+        print("· 续跑：%s 里已有 %d 个槽位（有效 %d 跑），从第 %d 个接着跑"
+              % (out, slots_done, len(runs), slots_done + 1), file=sys.stderr)
+
+    def _report(partial):
+        rep = {
+            "task_id": task.task_id,
+            "entry": _entry(),
+            "_partial": partial,
+            "_slotsDone": slots_done,
+            "_runsRequested": n_runs,
+            "_faultRetryBudget": fault_retry,
+            "_perRun": runs,
+            "_errors": errors,
+            "_traceDir": trace_base or "(未留轨迹，N7_NO_TRACE=1)",
+            "_costRMB": round(prev_cost + cost.total(), 6),
+            "_unpricedModels": cost.unpriced_models(),
+        }
+        return rep
+
+    def _flush(partial, rep=None):
+        if not out:
+            return
+        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+        tmp = out + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(rep or _report(partial), ensure_ascii=False, indent=2))
+        os.replace(tmp, out)
 
     def _one(td):
         if mode == "agent":
@@ -326,7 +436,7 @@ def main():
             time.sleep(gap)   # 跑间留白，躲限流严的模型（如 gpt-5.5）的突发 429
         slept[0] = True
 
-    for i in range(n_runs):
+    for i in range(slots_done, n_runs):
         # 每个槽位：先正常跑；是测量故障（如 finish_reason=length / 504 / 断流）就补跑，
         # 直到拿到一次有效结果或用尽 fault_retry 预算。补跑不改 maxSteps/maxTokens，口径不变。
         got = False
@@ -354,52 +464,12 @@ def main():
         if not got:
             print("  run %d/%d  ✗ 该槽位补跑 %d 次仍全是测量故障，放弃"
                   % (i + 1, n_runs, fault_retry), file=sys.stderr)
+        slots_done = i + 1
+        _flush(partial=slots_done < n_runs)
 
-
-
-    n_ok = len(runs)
-    scores = [r["score"] for r in runs]
-    full_pass = round(sum(1 for r in runs if r["passed"]) / n_ok, 4) if n_ok else None
-    mean_score = round(sum(scores) / n_ok, 4) if n_ok else None
-
-    scorer_version, card_sv = _scorer_version(task)
-    if not card_sv:
-        print("⚠️  任务卡未声明 evaluation.scorerVersion，本条测量记为 %r；qc 的难度闸要求"
-              "两者相等，建议先把卡补上再测" % scorer_version, file=sys.stderr)
-
-    # 判分契约 §6.2 形状：model/toolset/budget/scorerVersion/nRuns 必须钉住
-    entry = {
-        "model": cfg.llm.model,
-        # 换工具数字就不可比（§6.2）：单发盲解 vs 多步带文件工具是两种考法
-        "toolset": "single-shot-blind" if mode == "blind" else agentsolve.TOOLSETS[tools],
-        "budget": {"maxSteps": 1 if mode == "blind" else max_steps,
-                   "maxTokens": int(os.environ.get("ALE_LLM_MAX_TOKENS", "16000")),
-                   "reasoningEffort": os.environ.get("ALE_LLM_REASONING_EFFORT", "") or None,
-                   # 附件单文件读取上限也是「换了就不可比」的一项（§6.4）：材料被截断过
-                   # 和材料完整，对考生是两道题。不记下来，两条测量就没法对照。
-                   "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools in ("python", "engine"))
-                   else int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000")),
-                    "wallClockMin": None,
-                    # 考生 run_python 的环境（解释器+可调软件）。None = 产线默认解释器、无外部软件
-                    "runtime": agentsolve.runtime()[3]},
-        "scorerVersion": scorer_version,
-        "nRuns": n_ok,
-        "fullPassRate": full_pass,
-        "meanScore": mean_score,
-        "measuredAt": datetime.date.today().isoformat(),
-    }
-
-    report = {
-        "task_id": task.task_id,
-        "entry": entry,
-        "_runsRequested": n_runs,
-        "_faultRetryBudget": fault_retry,
-        "_perRun": runs,
-        "_errors": errors,
-        "_traceDir": trace_base or "(未留轨迹，N7_NO_TRACE=1)",
-        "_costRMB": cost.total(),
-        "_unpricedModels": cost.unpriced_models(),
-    }
+    report = _report(partial=False)
+    entry = report["entry"]
+    n_ok, full_pass, mean_score = entry["nRuns"], entry["fullPassRate"], entry["meanScore"]
 
     # 门槛判定（§6.3）—— 只在给了 N7_TIER 时判
     if tier in TIERS and full_pass is not None:
@@ -412,18 +482,14 @@ def main():
     elif tier and tier not in TIERS:
         print("⚠️  N7_TIER=%r 不认识，只认 便宜档/前沿档" % tier, file=sys.stderr)
 
-    out = os.environ.get("N7_OUT")
-    text = json.dumps(report, ensure_ascii=False, indent=2)
     if out:
-        os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
-        with open(out, "w", encoding="utf-8") as f:
-            f.write(text)
+        _flush(False, report)
         print("\n已写入 %s" % out, file=sys.stderr)
     else:
-        print(text)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
 
     print("\nnRuns=%d(请求%d) fullPassRate=%s meanScore=%s 成本RMB=%s%s"
-          % (n_ok, n_runs, full_pass, mean_score, cost.total(),
+          % (n_ok, n_runs, full_pass, mean_score, report["_costRMB"],
              "  ⚠️有%d次测量故障" % len(errors) if errors else ""), file=sys.stderr)
     if write:
         print("回填卡片：%s" % write_card(task, entry)[1], file=sys.stderr)
