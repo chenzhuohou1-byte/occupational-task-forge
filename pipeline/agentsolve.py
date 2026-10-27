@@ -149,7 +149,13 @@ def runtime():
       ALE_RUN_SOFTWARE  额外只读放行的软件目录（os.pathsep 分隔，如 KiCad.app 所在目录）
       ALE_RUN_PATH      追加到 PATH 的目录（如 kicad-cli 所在的 Contents/MacOS）
       ALE_RUN_RUNTIME   环境标签，记进 measuredDifficulty.budget.runtime（换了环境就不可比）
-    放行的只有这些目录本身，家目录其余部分（任务目录的 reference/、.env）照旧读不到。"""
+    放行的只有这些目录本身，家目录其余部分（任务目录的 reference/、.env）照旧读不到。
+
+    ALE_RUN_SANDBOX=docker 时换成容器后端（见 pipeline/docker_sandbox.py）：解释器与软件全在镜像里，
+    上面四个变量一概不看（它们指的是宿主路径），环境标签由镜像 tag 派生成 `docker-<tag>`。"""
+    if sandbox_backend() == "docker":
+        from . import docker_sandbox
+        return ("python", [], [], docker_sandbox.runtime_tag())
     key = tuple(os.environ.get(k, "") for k in
                 ("ALE_RUN_PYTHON", "ALE_RUN_SOFTWARE", "ALE_RUN_PATH", "ALE_RUN_RUNTIME"))
     if key in _RUNTIME_CACHE:
@@ -169,6 +175,15 @@ def runtime():
     res = (py, sorted(allow), extra, key[3] or None)
     _RUNTIME_CACHE[key] = res
     return res
+
+
+def sandbox_backend():
+    """考生 run_python 的隔离后端：默认 sandbox-exec（macOS，10-15 起的测量口径），
+    ALE_RUN_SANDBOX=docker 换容器。其它取值直接报错，免得拼错一个字母就悄悄退回默认后端。"""
+    b = os.environ.get("ALE_RUN_SANDBOX", "").strip().lower() or "sandbox-exec"
+    if b not in ("sandbox-exec", "docker"):
+        raise ValueError("ALE_RUN_SANDBOX 只认 sandbox-exec / docker，给的是 %r" % b)
+    return b
 
 
 _USER_BASE_CACHE = {}
@@ -228,6 +243,8 @@ def run_python(wd, code, tag, timeout=None, out_limit=None):
     隔离：macOS 上走 sandbox-exec（无网、读不了 ~、只能写 output/）；环境变量清空（不带密钥）。
     没有沙箱的机器（如 CI 的 Linux）默认**拒跑**并抛测量故障 —— 不隔离就让模型代码碰得到
     reference/ 与 .env，测出来的不是难度；离线自测可设 ALE_RUN_PYTHON_UNSANDBOXED=1 放行。
+    ALE_RUN_SANDBOX=docker 改走容器（pipeline/docker_sandbox.py，Linux 也能跑）；docker 不可达/镜像缺失/
+    容器卡死抛 SandboxUnavailable（RuntimeError），同样记测量故障。
     """
     timeout = timeout or int(os.environ.get("ALE_RUN_PYTHON_TIMEOUT", "120"))
     out_limit = out_limit or int(os.environ.get("ALE_RUN_PYTHON_OUTPUT_LIMIT", "6000"))
@@ -237,6 +254,10 @@ def run_python(wd, code, tag, timeout=None, out_limit=None):
     script = os.path.join(scratch, "%s.py" % tag)
     with open(script, "w", encoding="utf-8") as f:
         f.write(code)
+    if sandbox_backend() == "docker":
+        from . import docker_sandbox
+        return _observe(wd, timeout, out_limit,
+                        lambda: docker_sandbox.run(wd, script, timeout))
     py, _allow, extra_path, _tag = runtime()
     # HOME 指到草稿目录里的假家目录：真家目录在沙箱里只读，KiCad/Inkscape 每次调用都去 ~/Library
     # 建配置/字体缓存目录失败，刷满 stderr 吃掉输出额度（C2/C10 实测）。KiCad 不认 HOME，另给
@@ -262,16 +283,24 @@ def run_python(wd, code, tag, timeout=None, out_limit=None):
     elif os.environ.get("ALE_RUN_PYTHON_UNSANDBOXED", "") != "1":
         raise RuntimeError("run_python 需要沙箱（macOS sandbox-exec）；本机没有，拒跑以免模型代码"
                            "读到答案或密钥。离线自测可设 ALE_RUN_PYTHON_UNSANDBOXED=1。")
+    def _exec():
+        try:
+            r = subprocess.run(cmd, cwd=wd, env=env, capture_output=True, text=True,
+                               timeout=timeout, encoding="utf-8", errors="replace")
+            return "退出码 %d" % r.returncode, (r.stdout or "") + (
+                ("\n[stderr]\n" + r.stderr) if r.stderr else "")
+        except subprocess.TimeoutExpired as e:
+            return "超时（%ds）被终止" % timeout, (
+                e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or ""))
+    return _observe(wd, timeout, out_limit, _exec)
+
+
+def _observe(wd, timeout, out_limit, execute):
+    """两种后端共用的观察文本拼装：执行 → 截断过长输出 → 报告 output/ 里新写/改动的文件。
+    execute() 返回 (head, text)；基建故障由它直接抛出（不在这里吞掉）。"""
     out_dir = os.path.join(wd, "output")
     before = {p: os.path.getmtime(os.path.join(out_dir, p)) for p in _out_files(out_dir)}
-    try:
-        r = subprocess.run(cmd, cwd=wd, env=env, capture_output=True, text=True,
-                           timeout=timeout, encoding="utf-8", errors="replace")
-        head = "退出码 %d" % r.returncode
-        text = (r.stdout or "") + (("\n[stderr]\n" + r.stderr) if r.stderr else "")
-    except subprocess.TimeoutExpired as e:
-        head = "超时（%ds）被终止" % timeout
-        text = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+    head, text = execute()
     if len(text) > out_limit:
         half = out_limit // 2
         text = "%s\n…[中间省略 %d 字符]…\n%s" % (text[:half], len(text) - out_limit, text[-half:])

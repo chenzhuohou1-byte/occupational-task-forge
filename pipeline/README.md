@@ -25,6 +25,7 @@ ALE任务/
 │   ├── qc.py                    # N6 三道校验 / N7 盲解 / N8 地板审计
 │   ├── scaffold.py              # 从草案生成可跑任务骨架
 │   ├── agentsolve.py            # N7 agent 档考法（list/read/write/run_python/finish，沙箱）
+│   ├── docker_sandbox.py        # run_python 的容器后端（ALE_RUN_SANDBOX=docker，镜像见 runtime/examinee）
 │   ├── floor.py                 # N8 程序化地板（从 golden 合成同结构假答案）
 │   ├── crosscheck.py            # 双实现交叉复算
 │   ├── casegen.py / casegen_build.py  # 闭世界案例自动生成（build-case）
