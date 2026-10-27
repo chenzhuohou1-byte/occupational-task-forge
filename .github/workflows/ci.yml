@@ -12,7 +12,8 @@ on:
 
 jobs:
   selftest:
-    runs-on: ubuntu-latest
+    # 钉 24.04：ubuntu-latest 已滚到 26.04，setup-python 在 26.04 上没有 3.9（2026-10-27 起 3.9 矩阵直接挂）
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.9", "3.12"]   # 3.9 = 开发机自带版本，别让语法越界

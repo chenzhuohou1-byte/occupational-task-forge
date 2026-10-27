@@ -11,7 +11,8 @@
   3) agent 档动作循环自测（含「协议噪声 → 测量故障」这条诚实性路径）
   4) N7 runner 控制流自测（mock provider，不触网）
   5) 难度分级 / 用途闸门 / 大模型判分多数票 单元自测（纯函数，不触网不花钱）
-  6) 对自带 `tasks/_demo` 跑 qc：N6/N8 必须全过；难度必须**定不出级**
+  6) 考生 run_python 的 docker 后端（ALE_RUN_SANDBOX=docker）：参数级隔离断言 + 有 docker 时真容器实测
+  7) 对自带 `tasks/_demo` 跑 qc：N6/N8 必须全过；难度必须**定不出级**
      （demo 故意是水题且 measuredDifficulty 为空 → 未测 ≠ L1 → 不该进库）
 """
 import json
@@ -84,6 +85,9 @@ def main():
               "ALE_RUNS_DIR": os.path.join(ROOT, ".ci-runs"),
               "N7_TASK": "demo-procurement-tally-001"})[0],
         _run("难度分级/用途闸门自测", ["tests/test_gates.py"])[0],
+        # 考生 run_python 的 docker 后端：纯函数部分处处跑；真容器部分本机有 docker 且考生镜像
+        # 已构建才跑（CI 无 docker → 自动跳过），镜像不在本地绝不拉取。
+        _run("考生沙箱 docker 后端自测", ["tests/test_docker_sandbox.py"])[0],
         _run("可执行范式自测", ["tests/test_executable.py"],
              {"ALE_TASKS_DIR": os.path.join(ROOT, "tasks")})[0],
         check_demo_qc(),

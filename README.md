@@ -156,6 +156,7 @@ export ALE_RUNS_DIR=/path/to/private/runs
 
 - **N7 测评**（agent 的 `run_python`）与**生题**（casegen 里模型写的 参数生成器/solve/solve2/物化）
   → macOS `sandbox-exec` 子进程：无网络、读不了 `~`（含仓根 `.env`）、只许写工作目录。
+  N7 的 `run_python` 另有容器后端（`ALE_RUN_SANDBOX=docker`，Linux 也能跑），见 `docs/考生沙箱-docker.md`。
 - **可执行范式判分**：候选产物在容器里跑（非 root UID 65534、`--network none`、`--read-only`、
   `--cap-drop ALL`、标准答案不进候选挂载点）；给不可信 agent 的引擎自测起**一次性 Flowable+PG
   沙箱**（独立网络/卷/口令），用完 `compose down -v` 销毁。
