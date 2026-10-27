@@ -14,7 +14,9 @@ docker build -t ale-examinee:py3.12-sci-v1 runtime/examinee
 - 基础镜像：`docker.m.daocloud.io/library/python:3.12-slim`，钉 digest（docker.io 直连可能不通，daocloud 是同一份内容）。
 - Python 包：`runtime/examinee/requirements.txt`，**78 个分发全量钉死**（含传递依赖），与 macOS 考生环境
   `py3.12-sci-v3` 逐个同版本；`--no-deps --only-binary=:all:` 安装 + `pip check` 兜底，装什么只由这张表决定。
-  源是 HTTPS 阿里 PyPI 镜像，**正常证书校验**（没有 `--trusted-host`）。不跑 apt。
+  源是 HTTPS 阿里 PyPI 镜像，**正常证书校验**（没有 `--trusted-host`）。
+- 系统库：冒烟实测 pinocchio 缺 `libgomp`、SUMO 二进制缺 `libatomic/libX11/libexpat` 等，apt 源换成 HTTPS 阿里
+  Debian 镜像补装（apt 签名校验照常）。本机首次构建约 45 分钟（主要是 1 GB 轮子下载），镜像 3.11 GB。
 - 构建期冒烟（`runtime/examinee/smoke.py`）：主力包 import + `sumo/netconvert --version`；YoWASP 的 wasm
   预编译缓存预热进镜像（`YOWASP_CACHE_DIR=/opt/yowasp-cache`），否则只读根文件系统下每次调用都要重编。
 - 与 macOS 版的差异：`embreex`（trimesh 可选的光线求交加速）PyPI 没有 linux/aarch64 轮子，只在 x86_64 镜像里装；
