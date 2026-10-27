@@ -9,9 +9,7 @@
 # 两者是同一份内容（digest 相同）。
 FROM docker.m.daocloud.io/library/python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
 
-# 运行期不需要任何构建工具：requirements 里全部是预编译 manylinux 轮子（--only-binary），
-# 原生依赖都由 auditwheel 打包在轮子里。刻意不跑 apt：外部源只有基础镜像站 + 阿里 PyPI 两处。
-# 若以后某个轮子缺系统库，smoke.py 会让 build 失败，届时再显式加 apt 一步（并在文档里记来源）。
+# 运行期不需要任何构建工具：requirements 里全部是预编译 manylinux 轮子（--only-binary）。
 COPY requirements.txt /opt/ale/requirements.txt
 
 # HTTPS 阿里 PyPI 镜像，正常证书校验（不加 --trusted-host）。
@@ -20,6 +18,15 @@ RUN pip install --no-cache-dir --no-deps --only-binary=:all: \
         -i https://mirrors.aliyun.com/pypi/simple/ \
         -r /opt/ale/requirements.txt \
  && pip check
+
+# 少数轮子依赖系统库（冒烟实测）：pinocchio → libgomp.so.1；SUMO 的 sumo/netconvert → libatomic/libX11/libexpat 等。
+# apt 源换成 HTTPS 阿里 Debian 镜像（与 PyPI 同一站点），apt 自带的签名校验照常开启。
+# 放在 pip 层之后：改系统库不必重下 1 GB 轮子。
+RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends libgomp1 libatomic1 libexpat1 libx11-6 libxext6 libxrender1 \
+        libxft2 libxcursor1 libxinerama1 libxfixes3 libglu1-mesa libgl1 libfontconfig1 \
+ && rm -rf /var/lib/apt/lists/*
 
 # YoWASP（yosys 的 wasm 版）首次调用要把 wasm 编译成本机码（数十秒）。在镜像里预热到只读目录，
 # 考生容器根文件系统只读、HOME 是一次性的草稿目录——不预热的话每次 run_python 都要重编。

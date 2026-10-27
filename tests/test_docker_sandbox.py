@@ -180,7 +180,10 @@ def test_live():
                 "t('write_workroot', lambda: open('/work/x', 'w').write('x'))",
                 "t('write_usr', lambda: open('/usr/local/x', 'w').write('x'))",
                 "t('write_etc', lambda: open('/etc/x', 'w').write('x'))",
-                "print('env_leak' if any('KEY' in k or 'TOKEN' in k for k in os.environ) else 'env_clean')",
+                # 基础镜像自带 GPG_KEY（Python 发布签名公钥 ID，不是密钥），不能按「名字含 KEY」判；
+                # 直接查宿主那个假 key 的名字与值，再查宿主独有的 PATH/USER 没跟进来
+                "print('env_leak' if ('ALE_FAKE_API_KEY' in os.environ or any('sk-should-not-leak' in v"
+                " for v in os.environ.values()) or 'USER' in os.environ) else 'env_clean')",
                 "print('uid', os.getuid())",
                 "print('input', open('input/a.txt').read())",
                 "open('output/res.txt', 'w').write('ok')",
