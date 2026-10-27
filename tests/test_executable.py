@@ -263,9 +263,14 @@ def test_docker_bin_fallback():
             assert dockercli.docker_bin() == fake
             from pipeline import docker_sandbox
             assert docker_sandbox.build_cmd(d, "x.py", 5, "n", "img")[0] == fake
+            # 任务脚本自己裸调 docker：子进程 PATH 末尾补上回退目录，原 PATH 不动
+            with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+                assert harness._child_env()["PATH"] == "/usr/bin:/bin" + os.pathsep + d
         with patch.object(dockercli.shutil, "which", return_value=None), \
              patch.object(dockercli, "CANDIDATES", (missing,)):
             assert dockercli.docker_bin() == "docker"
+            with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+                assert harness._child_env()["PATH"] == "/usr/bin:/bin"
         with patch.object(dockercli.shutil, "which", return_value="/x/docker"), \
              patch.object(dockercli, "CANDIDATES", (fake,)):
             assert dockercli.docker_bin() == "docker"
