@@ -127,11 +127,13 @@ def test_pure():
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
-    # docker 不在 PATH → SandboxUnavailable（RuntimeError 子类，n7_run 记测量故障）
+    # docker 不在 PATH、候选安装位置也没有 → SandboxUnavailable（RuntimeError 子类，n7_run 记测量故障）
+    from unittest.mock import patch
+    from pipeline import dockercli
     empty = tempfile.mkdtemp(prefix="ale_nodocker_")
     base, wd, _ = _workdir()
     try:
-        with _Env(ALE_RUN_SANDBOX="docker", PATH=empty):
+        with _Env(ALE_RUN_SANDBOX="docker", PATH=empty), patch.object(dockercli, "CANDIDATES", ()):
             try:
                 agentsolve.run_python(wd, "print(1)", "nodocker")
             except SandboxUnavailable as e:

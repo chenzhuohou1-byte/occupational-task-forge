@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 
+from ...dockercli import docker_bin
 from .base import EngineAdapter, EngineUnavailable, CaseResult, DeployResult
 
 DEFAULT_IMAGE = "python:3.12-slim"
@@ -32,7 +33,7 @@ class ContainerAdapter(EngineAdapter):
 
     def probe(self):
         try:
-            v = subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"],
+            v = subprocess.run([docker_bin(), "version", "--format", "{{.Server.Version}}"],
                                capture_output=True, text=True, timeout=20)
         except (OSError, subprocess.TimeoutExpired) as e:
             raise EngineUnavailable("docker 调用失败：%s" % e)
@@ -66,7 +67,7 @@ class ContainerAdapter(EngineAdapter):
         shutil.copytree(cases_dir, os.path.join(work, "cases"))
         shutil.copy(runner, os.path.join(work, "container_runner.py"))
 
-        cmd = ["docker", "run", "--rm", "--network", "none",
+        cmd = [docker_bin(), "run", "--rm", "--network", "none",
                "--memory", "512m", "--cpus", "1", "--pids-limit", "256",
                "--security-opt", "no-new-privileges",
                "-e", "PYTHONDONTWRITEBYTECODE=1",
@@ -124,7 +125,7 @@ class ContainerAdapter(EngineAdapter):
                     p.chmod(0o755 if p.is_dir() else 0o644)
                 public.chmod(0o755)
                 name = 'ale-candidate-' + uuid.uuid4().hex
-                cmd = ['docker', 'run', '--rm', '--name', name, '--network', 'none',
+                cmd = [docker_bin(), 'run', '--rm', '--name', name, '--network', 'none',
                        '--user', '65534:65534', '--read-only', '--cap-drop', 'ALL',
                        '--security-opt', 'no-new-privileges', '--memory', '512m',
                        '--cpus', '1', '--pids-limit', '64', '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m',
@@ -156,7 +157,7 @@ class ContainerAdapter(EngineAdapter):
                     except subprocess.TimeoutExpired:
                         record = {'score': 0.0, 'passed': False, 'err': '候选执行超时'}
                     finally:
-                        subprocess.run(['docker', 'rm', '-f', name], capture_output=True, timeout=20)
+                        subprocess.run([docker_bin(), 'rm', '-f', name], capture_output=True, timeout=20)
                 by_case[case.name] = dict(record, name=case.name)
         if not by_case:
             raise EngineUnavailable('隐藏 cases 为空')

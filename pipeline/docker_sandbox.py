@@ -24,6 +24,8 @@ import subprocess
 import time
 import uuid
 
+from .dockercli import docker_bin
+
 DEFAULT_IMAGE = "ale-examinee:py3.12-sci-v1"
 LABEL = "ale.examinee-sandbox=1"   # 泄漏的容器可用 `docker ps -a --filter label=ale.examinee-sandbox=1` 找回
 # 容器里考生的工作目录。路径刻意与宿主无关：模型看不到宿主真实路径。
@@ -66,14 +68,14 @@ def probe(img=None):
     if _PROBED.get(img):
         return _PROBED[img]
     try:
-        v = subprocess.run(["docker", "version", "--format", "{{.Server.Version}} {{.Server.Arch}}"],
+        v = subprocess.run([docker_bin(), "version", "--format", "{{.Server.Version}} {{.Server.Arch}}"],
                            capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise SandboxUnavailable("docker 调用失败：%s" % e)
     if v.returncode != 0:
         raise SandboxUnavailable("docker 不可用：%s" % (v.stderr or v.stdout).strip()[:300])
     try:
-        i = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}} {{.Architecture}}", img],
+        i = subprocess.run([docker_bin(), "image", "inspect", "--format", "{{.Id}} {{.Architecture}}", img],
                            capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as e:
         raise SandboxUnavailable("docker image inspect 失败：%s" % e)
@@ -114,7 +116,7 @@ def build_cmd(wd, script_rel, timeout, name, img=None):
     env = {"HOME": home, "LANG": "C.UTF-8", "TMPDIR": scratch, "MPLCONFIGDIR": scratch,
            "KICAD_CONFIG_HOME": home + "/kicad", "XDG_CONFIG_HOME": home + "/.config",
            "XDG_CACHE_HOME": home + "/.cache", "XDG_DATA_HOME": home + "/.local/share"}
-    cmd = ["docker", "run", "--rm", "--pull", "never", "--name", name, "--label", LABEL,
+    cmd = [docker_bin(), "run", "--rm", "--pull", "never", "--name", name, "--label", LABEL,
            "--network", "none", "--read-only",
            "--tmpfs", "/tmp:rw,nosuid,size=256m",
            "--user", _user(), "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
@@ -166,7 +168,7 @@ def run(wd, script, timeout):
     except OSError as e:
         raise SandboxUnavailable("docker 调用失败：%s" % e)
     finally:
-        subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=30)
+        subprocess.run([docker_bin(), "rm", "-f", name], capture_output=True, timeout=30)
     err = r.stderr or ""
     if r.returncode == 125 or (r.returncode in (126, 127)
                                and any(m in err for m in _DOCKER_ERR_MARKERS)):
