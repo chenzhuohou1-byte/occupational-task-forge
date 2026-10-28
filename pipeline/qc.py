@@ -79,6 +79,46 @@ def _check_source_evidence(task):
     return (not bad), (bad or ["%s / %s：溯源项齐" % (cls, gen)])
 
 
+TACIT_FIELD = "隐性知识出处"
+
+
+def _check_tacit_sources(task):
+    """契约 §6.6 合法隐性知识：`元数据.隐性知识出处` 的**结构**校验。
+
+    只查格式，不判 4 条判据本身（题面不矛盾 / 常规做法 / 答案唯一要人审）。
+    **没写不报错**：旧卡与不依赖隐性知识的题都没有这个字段，本项直接通过。
+    写了就得写对：必须是非空数组，每项是对象，`考点`、`出处` 为非空字符串；
+    `url` 可空或省略（教科书、付费标准可能没有链接），非空时必须是 http(s) 链接。
+    其余键（如 `说明`）放行不查。
+    """
+    meta = task.card.get("元数据")
+    if not isinstance(meta, dict) or TACIT_FIELD not in meta:
+        return True, ["未声明 元数据.%s：本项不适用（旧卡/无隐性知识点）" % TACIT_FIELD]
+    items = meta.get(TACIT_FIELD)
+    if not isinstance(items, list) or not items:
+        return False, ["元数据.%s 写了就必须是非空数组 [{考点, 出处, url}]" % TACIT_FIELD]
+    bad = []
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            bad.append("第 %d 项不是对象" % (i + 1))
+            continue
+        for k in ("考点", "出处"):
+            v = it.get(k)
+            if not isinstance(v, str) or not v.strip():
+                bad.append("第 %d 项缺 %s（必填、非空字符串）" % (i + 1, k))
+        u = it.get("url")
+        if u is None:
+            u = ""
+        if not isinstance(u, str):
+            bad.append("第 %d 项 url 必须是字符串（可为空）" % (i + 1))
+        elif u.strip() and not re.match(r"^https?://\S+$", u.strip()):
+            bad.append("第 %d 项 url 非空时必须是 http(s) 链接：%r" % (i + 1, u[:80]))
+    if bad:
+        return False, bad
+    n_url = sum(1 for it in items if str(it.get("url") or "").strip())
+    return True, ["隐性知识点 %d 个，出处齐（其中 %d 个带链接）" % (len(items), n_url)]
+
+
 def n6_verify(task, pass_threshold=1.0):
     """N6 进库校验（确定性，判分契约 §8）：
       1) 四档夹具实测分 == 任务卡声明的 fixtureScores（老任务只有正负两档时退化为两档）
@@ -89,6 +129,7 @@ def n6_verify(task, pass_threshold=1.0):
          测试集严格（必须非空且可定位），训练集免掉人写的溯源清单、但机器产的逐字段明细必须在
       6) 判分依据真能追到附件：material 类的 ref 指到的文件在 input 里存在（写了就得写对）
       7) 题面不泄标准答案：reference 里的数值不许出现在 prompt / 交付要求里
+      8) 隐性知识出处格式（§6.6）：`元数据.隐性知识出处` 写了就查结构，没写不适用
 
     可执行范式（§9.5）走单独分支 `_n6_verify_executable`：夹具是 golden/negatives 而非
     四档表格夹具；判分链路含真实工具链、判分可复现与"题面不泄答案"仍查，但不信任自报的
@@ -147,6 +188,9 @@ def n6_verify(task, pass_threshold=1.0):
 
     src_ok, src_detail = _check_source_evidence(task)
     checks.append({"检查": "材料来源声明与溯源齐备", "通过": src_ok, "明细": src_detail})
+
+    tk_ok, tk_detail = _check_tacit_sources(task)
+    checks.append({"检查": "隐性知识出处格式(§6.6)", "通过": tk_ok, "明细": tk_detail})
 
     ok = all(c["通过"] for c in checks)
     return ok, {"task_id": task.task_id, "用途": purpose, "checks": checks,
@@ -332,6 +376,7 @@ def _n6_verify_executable(task):
          负例因自报与引擎实算不一致被独立拒绝
       5) 数据已填（无 TODO 占位）
       6) 题面不泄标准答案（与数值范式同一道闸门）
+      7) 隐性知识出处格式（§6.6，与数值范式同一道闸门）
     引擎/容器不可达 → 本节判不了，记故障（既不静默放行、也不记成做错）。
     """
     ev = task.card.get("evaluation") or {}
@@ -383,6 +428,9 @@ def _n6_verify_executable(task):
 
     src_ok, src_detail = _check_source_evidence(task)
     checks.append({"检查": "材料来源声明与溯源齐备", "通过": src_ok, "明细": src_detail})
+
+    tk_ok, tk_detail = _check_tacit_sources(task)
+    checks.append({"检查": "隐性知识出处格式(§6.6)", "通过": tk_ok, "明细": tk_detail})
 
     ok = all(c["通过"] for c in checks)
     return ok, {"task_id": task.task_id, "范式": "executable",

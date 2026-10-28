@@ -60,6 +60,10 @@ def check_demo_qc():
                    "tier=%s —— 未测 ≠ L1" % row.get("tier"))
     if row.get("进库"):
         bad.append("demo 不该可进库")
+    # §6.6 接线：N6 里要有隐性知识出处这一项，且 demo 没写该字段时按「不适用」通过（旧卡不受影响）
+    tk = [c for c in row["N6"]["checks"] if c["检查"].startswith("隐性知识出处")]
+    if not tk or not tk[0]["通过"]:
+        bad.append("N6 缺「隐性知识出处」检查，或 demo 未声明该字段却没通过：%s" % tk)
     if bad:
         print("✗ _demo qc 行为不符预期：\n  - " + "\n  - ".join(bad))
         return False
