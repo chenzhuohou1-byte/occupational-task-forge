@@ -209,8 +209,78 @@ def test_fault_and_empty_cases():
     print('✓ 非零退出/fault 透传、空 cases 拒绝、门槛不白送分、自报格式错误正常判负')
 
 
+def test_scorer_imports_pipeline_without_pythonpath():
+    """数据仓里的任务（不在本仓目录树下）判分器 `import pipeline`：不设 PYTHONPATH 也得能判。
+    回归：曾因子进程不带仓根，判分器 ModuleNotFoundError 退出码 1 → qc 记「引擎不可达」。
+    仿真实薄壳：main.py evaluate 再起一层 scripts/score_outputs.py 子进程。"""
+    import json
+    import textwrap
+    from unittest.mock import patch
+
+    with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as extra:
+        os.makedirs(os.path.join(d, "scripts"))
+        os.makedirs(os.path.join(d, "assets", "reference"))
+        os.makedirs(os.path.join(d, "output"))
+        with open(os.path.join(d, "main.py"), "w") as f:
+            f.write(textwrap.dedent("""\
+                import os, subprocess, sys
+                HERE = os.path.dirname(os.path.abspath(__file__))
+                sys.exit(subprocess.run([sys.executable, os.path.join(HERE, "scripts", "score_outputs.py")]).returncode)
+                """))
+        with open(os.path.join(d, "scripts", "score_outputs.py"), "w") as f:
+            f.write(textwrap.dedent("""\
+                import json, os, sys
+                from pipeline.executable import runner  # noqa: F401
+                print(json.dumps({"score": 1.0, "passed": True, "errors": [], "details": [],
+                                  "path": os.environ.get("PYTHONPATH", "")}))
+                """))
+        task = Task("pp", d, {"evaluation": {"type": "executable_artifact"}})
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        with patch.dict(os.environ, env, clear=True):
+            r = harness.evaluate(task, d)
+        assert not r.fault and r.passed and r.score == 1.0, r.fault or r.errors
+        assert r.raw["path"].split(os.pathsep)[0] == ROOT, r.raw["path"]
+        # 已有 PYTHONPATH 不覆盖：仓根在前、原值保留
+        with patch.dict(os.environ, {"PYTHONPATH": extra}):
+            r = harness.evaluate(task, d)
+        assert not r.fault and r.raw["path"].split(os.pathsep) == [ROOT, extra], r.raw["path"]
+    print("✓ 判分器子进程自动带仓根 PYTHONPATH（前置、不覆盖原值），数据仓任务不设环境也能判")
+
+
+def test_docker_bin_fallback():
+    """PATH 里没有 docker 时按候选安装位置回退；PATH 有就照旧裸 "docker"；全无仍返回 "docker"。"""
+    from unittest.mock import patch
+    from pipeline import dockercli
+
+    with tempfile.TemporaryDirectory() as d:
+        fake = os.path.join(d, "docker")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(fake, 0o755)
+        missing = os.path.join(d, "nope", "docker")
+        with patch.object(dockercli.shutil, "which", return_value=None), \
+             patch.object(dockercli, "CANDIDATES", (missing, fake)):
+            assert dockercli.docker_bin() == fake
+            from pipeline import docker_sandbox
+            assert docker_sandbox.build_cmd(d, "x.py", 5, "n", "img")[0] == fake
+            # 任务脚本自己裸调 docker：子进程 PATH 末尾补上回退目录，原 PATH 不动
+            with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+                assert harness._child_env()["PATH"] == "/usr/bin:/bin" + os.pathsep + d
+        with patch.object(dockercli.shutil, "which", return_value=None), \
+             patch.object(dockercli, "CANDIDATES", (missing,)):
+            assert dockercli.docker_bin() == "docker"
+            with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}):
+                assert harness._child_env()["PATH"] == "/usr/bin:/bin"
+        with patch.object(dockercli.shutil, "which", return_value="/x/docker"), \
+             patch.object(dockercli, "CANDIDATES", (fake,)):
+            assert dockercli.docker_bin() == "docker"
+    print("✓ docker 定位：PATH 优先、缺失时回退候选安装路径、全无保持原报错口径")
+
+
 def main():
     test_fault_and_empty_cases()
+    test_scorer_imports_pipeline_without_pythonpath()
+    test_docker_bin_fallback()
     test_is_executable()
     test_list_negatives()
     test_selftest_gating()

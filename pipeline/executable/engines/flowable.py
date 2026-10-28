@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from ...dockercli import docker_bin
 from .base import EngineAdapter, EngineUnavailable, CaseResult, DeployResult
 
 DEFAULT_BASE = "http://127.0.0.1:18080/flowable-rest/service/"
@@ -51,7 +52,7 @@ class FlowableAdapter(EngineAdapter):
                 import subprocess
                 try:
                     raw = subprocess.check_output(
-                        ["docker", "inspect", "--format", "{{json .Config.Env}}", self.container],
+                        [docker_bin(), "inspect", "--format", "{{json .Config.Env}}", self.container],
                         stderr=subprocess.DEVNULL, text=True, timeout=10)
                     env = dict(v.split("=", 1) for v in json.loads(raw) if "=" in v)
                     password = env["FLOWABLE_REST_APP_ADMIN_PASSWORD"]

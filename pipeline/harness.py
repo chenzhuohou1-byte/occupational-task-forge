@@ -29,8 +29,28 @@ class EvalResult:
 
 
 
+# 框架仓根目录。可执行范式判分器（scripts/score_outputs.py）要 `import pipeline`，
+# 而任务目录在数据仓、不在本仓下，它自带的「往上找 pipeline/」兜底找不到。
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _child_env():
+    """子进程环境：仓根追加到 PYTHONPATH 最前（保留已有值），任务 main.py 及其拉起的判分器都继承。
+    PATH 上没有 docker 时把回退找到的 docker 所在目录追加到 PATH 末尾——任务自带的
+    checks_task.py 等会自己裸调 "docker"，框架内的 docker_bin() 管不到它们。"""
+    from .dockercli import docker_bin
+    env = dict(os.environ)
+    old = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = ROOT + (os.pathsep + old if old else "")
+    d = docker_bin()
+    if os.path.isabs(d):
+        p = env.get("PATH", "")
+        env["PATH"] = (p + os.pathsep if p else "") + os.path.dirname(d)
+    return env
+
+
 def _run(cmd, cwd=None, timeout=1800):
-    return subprocess.run(cmd, cwd=cwd, timeout=timeout,
+    return subprocess.run(cmd, cwd=cwd, timeout=timeout, env=_child_env(),
                           capture_output=True, text=True)
 
 

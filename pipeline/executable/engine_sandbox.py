@@ -15,6 +15,7 @@ import socket
 import subprocess
 import time
 
+from ..dockercli import docker_bin
 from .engines import get_adapter
 from .engines.base import EngineUnavailable
 
@@ -69,7 +70,7 @@ class DisposableFlowable:
         return env
 
     def _compose(self, *args, timeout=60, check=True):
-        cmd = ["docker", "compose", "-p", self.project, "-f", COMPOSE, *args]
+        cmd = [docker_bin(), "compose", "-p", self.project, "-f", COMPOSE, *args]
         try:
             r = subprocess.run(cmd, env=self._env(), capture_output=True, text=True,
                                timeout=timeout)
