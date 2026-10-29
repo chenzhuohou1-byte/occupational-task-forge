@@ -237,6 +237,43 @@ def test_source():
     check(ok, "real_derived + synthetic_overlays → 通过")
 
 
+def test_tacit_sources():
+    """§6.6 合法隐性知识：元数据.隐性知识出处 只查结构；没写不报错（旧卡不受影响）。"""
+    print("\n[隐性知识出处]")
+    T = lambda meta: FakeTask({"元数据": meta} if meta is not None else {})  # noqa: E731
+    # 没写 → 不适用、通过（旧卡、无 元数据、元数据 不是 dict 都一样）
+    for c in ({}, {"元数据": "x"}, {"元数据": {"机器规格": "2C4G"}}):
+        ok, _ = qc._check_tacit_sources(FakeTask(c))
+        check(ok, "未声明不报错：%r → 通过" % (c,))
+    urdf = {"考点": "pinocchio centerOfMass/computeTotalMass 不含固连世界系的根 link",
+            "出处": "pinocchio issue #1394 维护者答复：base link 固连惯性系、不进动力学方程",
+            "url": "https://github.com/stack-of-tasks/pinocchio/issues/1394"}
+    ok, d = qc._check_tacit_sources(T({"隐性知识出处": [urdf]}))
+    check(ok, "URDF 范例（考点+出处+url）→ 通过")
+    for url in ("", None):
+        ok, _ = qc._check_tacit_sources(T({"隐性知识出处": [dict(urdf, url=url)]}))
+        check(ok, "url=%r（教科书无链接）→ 通过" % (url,))
+    no_url = dict(urdf)
+    no_url.pop("url")
+    ok, _ = qc._check_tacit_sources(T({"隐性知识出处": [no_url]}))
+    check(ok, "省略 url 键 → 通过（url 可空）")
+    # 写了就得写对
+    for bad, why in (([], "空数组"), ({"考点": "x"}, "不是数组"), (["x"], "数组项不是对象")):
+        ok, _ = qc._check_tacit_sources(T({"隐性知识出处": bad}))
+        check(not ok, "%s → 不通过" % why)
+    for k in ("考点", "出处"):
+        for v in (None, "", "  ", 3):
+            it = dict(urdf, **{k: v}) if v is not None else {x: y for x, y in urdf.items() if x != k}
+            ok, d = qc._check_tacit_sources(T({"隐性知识出处": [it]}))
+            check(not ok and any(k in x for x in d), "%s=%r → 不通过" % (k, v))
+    for url in ("github.com/x", "ftp://x/y", 42):
+        ok, d = qc._check_tacit_sources(T({"隐性知识出处": [dict(urdf, url=url)]}))
+        check(not ok and any("url" in x for x in d), "url=%r → 不通过" % (url,))
+    # 多项：一项坏整体不过，且报出是第几项
+    ok, d = qc._check_tacit_sources(T({"隐性知识出处": [urdf, dict(urdf, 出处="")]}))
+    check(not ok and any("第 2 项" in x for x in d), "多项中第 2 项缺出处 → 不通过并定位到第 2 项")
+
+
 def test_basis_ref_suffix():
     """§7 依据可定位：ref 里的文件名不限后缀（真实软件题的 .kicad_pcb/.net.xml/.vcf），
     但仍须真能在 input 下找到同名文件。"""
@@ -263,12 +300,12 @@ def test_basis_ref_suffix():
 
 def main():
     for fn in (test_tiers, test_tier_rejects, test_purpose, test_majority_repro, test_source,
-               test_basis_ref_suffix):
+               test_tacit_sources, test_basis_ref_suffix):
         fn()
     if FAILURES:
         print("\n✗ %d 项不符预期：\n  - %s" % (len(FAILURES), "\n  - ".join(FAILURES)))
         return 1
-    print("\n✓ 难度分级/用途/多数票/材料来源 全部符合预期")
+    print("\n✓ 难度分级/用途/多数票/材料来源/隐性知识出处 全部符合预期")
     return 0
 
 
