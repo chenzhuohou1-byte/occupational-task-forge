@@ -8,9 +8,10 @@
 覆盖：
   1) N4 造附件自测（声明式规格 → 真实 xlsx/pdf/docx/csv，含降级与接线）
   2) 程序化地板合成自测（键名/表头/行键保留、值全变）
-  3) agent 档动作循环自测（含「协议噪声 → 测量故障」这条诚实性路径）
-  4) N7 runner 控制流自测（mock provider，不触网）
-  5) 难度分级 / 用途闸门 / 大模型判分多数票 单元自测（纯函数，不触网不花钱）
+  3) agent 档动作循环自测（含「协议噪声 → 测量故障」这条诚实性路径、无效步留证 step_XX_fault.json、
+     工具标记只计数不改解析）
+  4) N7 runner 控制流自测（mock provider，不触网；含「凑够 N 个有效跑」、半截不回填、tier 回填）
+  5) 难度分级 / 用途闸门 / 大模型判分多数票 / 设计缺陷登记 / 泄答案闸跳过二进制与大文件 单元自测
   6) 考生 run_python 的 docker 后端（ALE_RUN_SANDBOX=docker）：参数级隔离断言 + 有 docker 时真容器实测
   7) 对自带 `tasks/_demo` 跑 qc：N6/N8 必须全过；难度必须**定不出级**
      （demo 故意是水题且 measuredDifficulty 为空 → 未测 ≠ L1 → 不该进库）

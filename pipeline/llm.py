@@ -9,7 +9,7 @@ import ssl
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _ssl_context(verify=True):
@@ -32,6 +32,9 @@ class LLMResult:
     model: str = ""
     finish_reason: str = ""
     reasoning_tokens: int = 0
+    # 测量故障留证用的原始材料（只有真实网关客户端填）：请求参数、网关原样 usage、响应头、
+    # 流式统计（各类 delta 计数、reasoning/tool_calls 原文、耗时）。下游只在出故障时落盘。
+    raw: dict = field(default=None, repr=False)
 
 
 class LLMClient:
@@ -102,7 +105,9 @@ class OpenAICompatClient(LLMClient):
         last = None
         for i in range(attempts):
             try:
+                t0 = time.time()
                 with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                    headers = _keep_headers(r.headers)
                     data = _read_stream(r) if stream else json.loads(r.read())
                 # 网关偶发回 200 但 choices 为 null（错误信封，如上游超时）：当瞬时故障重试，
                 # 而不是让 `None[0]` 抛 TypeError 绕过重试（实测 ward 那条一个槽位连挂三次）
@@ -117,7 +122,12 @@ class OpenAICompatClient(LLMClient):
                     completion_tokens=usage.get("completion_tokens", 0),
                     model=data.get("model", self.cfg.model),
                     finish_reason=choice.get("finish_reason", ""),
-                    reasoning_tokens=detail.get("reasoning_tokens", 0))
+                    reasoning_tokens=detail.get("reasoning_tokens", 0),
+                    raw={"request": {k: payload.get(k) for k in
+                                     ("model", "max_tokens", "reasoning_effort", "temperature", "stream")},
+                         "attempt": i + 1, "elapsed_s": round(time.time() - t0, 2),
+                         "usage": usage, "finish_reason": choice.get("finish_reason"),
+                         "headers": headers, "stream": data.get("_stream")})
             except (urllib.error.URLError, ConnectionError, TimeoutError, OSError, ValueError) as e:
                 last = e
                 if i < attempts - 1:
@@ -130,15 +140,32 @@ class OpenAICompatClient(LLMClient):
         raise RuntimeError("网关请求失败（重试 %d 次仍失败）：%s" % (attempts, last))
 
 
+_DROP_HEADERS = ("set-cookie", "authorization", "cookie")
+
+
+def _keep_headers(h):
+    """响应头原样留下（渠道/请求号/限流/上游状态都在这里），只去掉 cookie 类。"""
+    try:
+        return {k: v for k, v in h.items() if k.lower() not in _DROP_HEADERS}
+    except Exception:  # noqa: BLE001 留证不许反过来打断测量
+        return {}
+
+
 def _read_stream(resp):
-    """把 SSE 流（data: {...} 行）拼回非流式响应的形状，下游解析不用改。"""
+    """把 SSE 流（data: {...} 行）拼回非流式响应的形状，下游解析不用改。
+
+    另在 `_stream` 里留统计：各类 delta 键出现次数、reasoning_content / tool_calls 原文、
+    没有 finish_reason 的流（疑似中途断开）也看得出来。只用于故障留证，不改返回的 content。
+    """
     text, fin, usage, model, n = [], "", {}, "", 0
+    keys, reasoning, tool_calls, saw_done = {}, [], [], False
     for raw in resp:
         line = raw.decode("utf-8", "ignore").strip()
         if not line.startswith("data:"):
             continue
         d = line[5:].strip()
         if d == "[DONE]":
+            saw_done = True
             break
         j = json.loads(d)
         if j.get("error"):
@@ -148,12 +175,22 @@ def _read_stream(resp):
         if j.get("usage"):
             usage = j["usage"]
         for c in j.get("choices") or []:
-            text.append((c.get("delta") or {}).get("content") or "")
+            delta = c.get("delta") or {}
+            text.append(delta.get("content") or "")
+            for k, v in delta.items():
+                if v not in (None, "", [], {}):
+                    keys[k] = keys.get(k, 0) + 1
+            if delta.get("reasoning_content"):
+                reasoning.append(delta["reasoning_content"])
+            if delta.get("tool_calls"):
+                tool_calls.append(delta["tool_calls"])
             fin = c.get("finish_reason") or fin
     if not n:
         raise ConnectionError("网关流式响应为空")
     return {"model": model, "usage": usage,
-            "choices": [{"message": {"content": "".join(text)}, "finish_reason": fin}]}
+            "choices": [{"message": {"content": "".join(text)}, "finish_reason": fin}],
+            "_stream": {"chunks": n, "saw_done": saw_done, "delta_keys": keys,
+                        "reasoning_content": "".join(reasoning), "tool_calls": tool_calls}}
 
 
 def get_client(cfg):

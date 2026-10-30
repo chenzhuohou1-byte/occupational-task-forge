@@ -119,6 +119,101 @@ def _check_tacit_sources(task):
     return True, ["隐性知识点 %d 个，出处齐（其中 %d 个带链接）" % (len(items), n_url)]
 
 
+DEFECT_FIELD = "设计缺陷"
+DEFECT_TYPES = ("矛盾", "歧义", "缺漏")
+# 缺陷位置不在附件里、而在题面本身时，`位置.文件` 写这几个之一
+DEFECT_PROMPT_LOCS = ("题面", "交付要求", "prompt")
+
+
+def _check_spec_defects(task):
+    """契约 §6.7 设计好的规格缺陷：`元数据.设计缺陷` 的**结构**校验（2026-10-30，按首道试点的写法定）。
+
+    只查格式与 gold 落盘，不判「这处缺陷是不是真有两种说得通的读法」（要人审）。
+    **没写不适用**：旧卡与没埋缺陷的题都没有这个字段；空数组＝显式声明 0 处（对照题），通过。
+    写了缺陷就得写对，每项：
+      - `位置`：对象，`文件` 必填（input/ 下的附件名，或 题面/交付要求），另需至少一个定位键
+        （条款/字段/行…）；
+      - `类型`：矛盾 / 歧义 / 缺漏 之一；
+      - `读法`：至少两种，每种是对象，`读法`（文字）与 `gold`（相对任务目录的路径，可带通配）必填；
+        gold 必须匹配到实际存在的文件或目录，且不许落在考生可读的 assets/input/ 下。
+    其余键（编号、命中锚点、影响、说明…）放行不查；`编号` 写了不许重复。
+    """
+    import glob as _glob
+    meta = task.card.get("元数据")
+    if not isinstance(meta, dict) or DEFECT_FIELD not in meta:
+        return True, ["未声明 元数据.%s：本项不适用（旧卡/没埋缺陷的题）" % DEFECT_FIELD]
+    items = meta.get(DEFECT_FIELD)
+    if not isinstance(items, list):
+        return False, ["元数据.%s 写了就必须是数组 [{位置, 类型, 读法:[{读法, gold}]}]" % DEFECT_FIELD]
+    if not items:   # 对照题：同一场景写清了规格、显式声明 0 处缺陷（用来测误报）
+        return True, ["元数据.%s 为空数组：显式声明 0 处设计缺陷（对照题）" % DEFECT_FIELD]
+    root = os.path.realpath(task.dir)
+    in_dir = os.path.join(root, "assets", "input")
+    inputs = set()
+    for r, _, fs in os.walk(in_dir):
+        for f in fs:
+            inputs.add(f)
+            inputs.add(os.path.relpath(os.path.join(r, f), in_dir))
+    bad, ids, n_readings = [], [], 0
+    for i, it in enumerate(items):
+        tag = "第 %d 项%s" % (i + 1, "(%s)" % it.get("编号") if isinstance(it, dict) and it.get("编号") else "")
+        if not isinstance(it, dict):
+            bad.append("%s 不是对象" % tag)
+            continue
+        if it.get("编号") is not None:
+            ids.append(str(it.get("编号")))
+        loc = it.get("位置")
+        if not isinstance(loc, dict):
+            bad.append("%s 位置 必须是对象 {文件, 条款/字段/行}" % tag)
+        else:
+            fn = loc.get("文件")
+            if not isinstance(fn, str) or not fn.strip():
+                bad.append("%s 位置.文件 必填" % tag)
+            elif fn.strip() not in DEFECT_PROMPT_LOCS and fn.strip().lstrip("/") not in inputs:
+                bad.append("%s 位置.文件 %r 不在 assets/input/ 里（题面里的缺陷写 题面/交付要求）" % (tag, fn))
+            if not [k for k, v in loc.items() if k != "文件" and v not in (None, "", [], {})]:
+                bad.append("%s 位置 只有文件、缺条款/字段/行等定位" % tag)
+        if it.get("类型") not in DEFECT_TYPES:
+            bad.append("%s 类型 只许 %s，给的是 %r" % (tag, "/".join(DEFECT_TYPES), it.get("类型")))
+        rd = it.get("读法")
+        if not isinstance(rd, list) or len(rd) < 2:
+            bad.append("%s 读法 必须是至少两种读法的数组（只有一种读法就不是缺陷）" % tag)
+            continue
+        codes = []
+        for j, r in enumerate(rd):
+            rt = "%s 读法%d" % (tag, j + 1)
+            if not isinstance(r, dict):
+                bad.append("%s 不是对象" % rt)
+                continue
+            n_readings += 1
+            if r.get("代码") is not None:
+                codes.append(str(r.get("代码")))
+            if not isinstance(r.get("读法"), str) or not r.get("读法").strip():
+                bad.append("%s 缺 读法 文字" % rt)
+            g = r.get("gold")
+            if not isinstance(g, str) or not g.strip():
+                bad.append("%s 缺 gold 路径" % rt)
+                continue
+            g = g.strip()
+            if os.path.isabs(g) or ".." in g.replace("\\", "/").split("/"):
+                bad.append("%s gold 必须是任务目录内的相对路径：%r" % (rt, g))
+                continue
+            hits = [os.path.realpath(h) for h in _glob.glob(os.path.join(root, g))]
+            if not hits:
+                bad.append("%s gold 路径不存在：%s" % (rt, g))
+            elif [h for h in hits if h == in_dir or h.startswith(in_dir + os.sep)]:
+                bad.append("%s gold 落在考生可读的 assets/input/ 下：%s" % (rt, g))
+        if len(set(codes)) != len(codes):
+            bad.append("%s 读法 代码 重复：%s" % (tag, codes))
+    dup = sorted({x for x in ids if ids.count(x) > 1})
+    if dup:
+        bad.append("编号 重复：%s" % dup)
+    if bad:
+        return False, bad
+    return True, ["设计缺陷 %d 处（%s），读法 %d 种，gold 路径全部存在" % (
+        len(items), "/".join("%s%s" % (it.get("编号") or "", it.get("类型")) for it in items), n_readings)]
+
+
 def n6_verify(task, pass_threshold=1.0):
     """N6 进库校验（确定性，判分契约 §8）：
       1) 四档夹具实测分 == 任务卡声明的 fixtureScores（老任务只有正负两档时退化为两档）
@@ -130,6 +225,7 @@ def n6_verify(task, pass_threshold=1.0):
       6) 判分依据真能追到附件：material 类的 ref 指到的文件在 input 里存在（写了就得写对）
       7) 题面不泄标准答案：reference 里的数值不许出现在 prompt / 交付要求里
       8) 隐性知识出处格式（§6.6）：`元数据.隐性知识出处` 写了就查结构，没写不适用
+      9) 设计缺陷登记格式（§6.7）：`元数据.设计缺陷` 写了就查结构与 gold 路径，没写不适用
 
     可执行范式（§9.5）走单独分支 `_n6_verify_executable`：夹具是 golden/negatives 而非
     四档表格夹具；判分链路含真实工具链、判分可复现与"题面不泄答案"仍查，但不信任自报的
@@ -191,6 +287,9 @@ def n6_verify(task, pass_threshold=1.0):
 
     tk_ok, tk_detail = _check_tacit_sources(task)
     checks.append({"检查": "隐性知识出处格式(§6.6)", "通过": tk_ok, "明细": tk_detail})
+
+    sd_ok, sd_detail = _check_spec_defects(task)
+    checks.append({"检查": "设计缺陷登记格式(§6.7)", "通过": sd_ok, "明细": sd_detail})
 
     ok = all(c["通过"] for c in checks)
     return ok, {"task_id": task.task_id, "用途": purpose, "checks": checks,
@@ -377,6 +476,7 @@ def _n6_verify_executable(task):
       5) 数据已填（无 TODO 占位）
       6) 题面不泄标准答案（与数值范式同一道闸门）
       7) 隐性知识出处格式（§6.6，与数值范式同一道闸门）
+      8) 设计缺陷登记格式（§6.7，与数值范式同一道闸门）
     引擎/容器不可达 → 本节判不了，记故障（既不静默放行、也不记成做错）。
     """
     ev = task.card.get("evaluation") or {}
@@ -431,6 +531,9 @@ def _n6_verify_executable(task):
 
     tk_ok, tk_detail = _check_tacit_sources(task)
     checks.append({"检查": "隐性知识出处格式(§6.6)", "通过": tk_ok, "明细": tk_detail})
+
+    sd_ok, sd_detail = _check_spec_defects(task)
+    checks.append({"检查": "设计缺陷登记格式(§6.7)", "通过": sd_ok, "明细": sd_detail})
 
     ok = all(c["通过"] for c in checks)
     return ok, {"task_id": task.task_id, "范式": "executable",
@@ -679,7 +782,9 @@ def n7_blind_solve(task, llm, cost=None, trace_dir=None):
         cost.add("N7", res)
     meta = {"model": getattr(res, "model", ""), "finish_reason": res.finish_reason,
             "prompt_tokens": res.prompt_tokens, "completion_tokens": res.completion_tokens,
-            "reasoning_tokens": res.reasoning_tokens, "work_dir": wd}
+            "reasoning_tokens": res.reasoning_tokens, "work_dir": wd,
+            # 网关原样 usage / 请求 max_tokens / 响应头 / 流式统计（故障留证，同 agent 档 step_XX_fault）
+            "raw": getattr(res, "raw", None)}
     _save_trace(trace_dir, prompt=prompt, response_raw=res.text, meta=meta)
     # 诚实性闸门①：content 为空、或被 max_tokens 截断（finish_reason=length）＝测量故障，
     # 不是「agent 不会做」。推理型模型会把预算烧在 reasoning_content 上、content 返空。
@@ -850,16 +955,51 @@ def _check_basis_traceable(task):
     return True, ["%d 条依据全部可定位" % len(basis)]
 
 
+# 泄答案闸不逐字扫的 reference 文件：网格/模型/栅格/压缩容器这类扩展名、含 NUL 字节的二进制、
+# 超过阈值的大文件。它们里面的「数」是顶点坐标、像元值、压缩字节，不是答案；逐字扫既慢
+# （几十 MB 的网格文件用正则过一遍要几分钟）又会把坐标当 gold 报假阳性。跳过的文件列进明细。
+LEAK_SCAN_MAX_BYTES = int(os.environ.get("ALE_QC_LEAK_MAX_BYTES", str(1024 * 1024)))
+LEAK_SKIP_EXTS = frozenset((
+    ".stl", ".obj", ".ply", ".dae", ".glb", ".gltf", ".off", ".3ds", ".fbx", ".msh", ".vtk", ".vtu",
+    ".gtx", ".gsb", ".byn", ".tif", ".tiff", ".grd", ".nc", ".h5", ".hdf5",
+    ".npy", ".npz", ".pkl", ".parquet", ".bin", ".zip", ".gz", ".png", ".jpg", ".jpeg"))
+
+
+def _leak_scan_skip(path):
+    """该 reference 文件不逐字扫的原因；要扫返回空串。"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in LEAK_SKIP_EXTS:
+        return "网格/二进制扩展名 %s" % ext
+    try:
+        size = os.path.getsize(path)
+        if size > LEAK_SCAN_MAX_BYTES:
+            return "超过 %d 字节（%d）" % (LEAK_SCAN_MAX_BYTES, size)
+        with open(path, "rb") as f:
+            if b"\0" in f.read(8192):
+                return "二进制（含 NUL 字节）"
+    except OSError as e:
+        return "读不了：%s" % type(e).__name__
+    return ""
+
+
 def _gold_numbers(task, lo=1000.0):
-    """标准答案里的「有辨识度的数」：|v|≥lo。夹具目录排除（夹具本就是答案的变体）。"""
+    """标准答案里的「有辨识度的数」：|v|≥lo。夹具目录排除（夹具本就是答案的变体）。
+
+    返回 (数集合, 跳过的文件清单)。二进制/网格/大文件不逐字扫，见 `_leak_scan_skip`。
+    """
     ref = os.path.join(task.dir, "assets", "reference")
-    out = set()
+    out, skipped = set(), []
     for root, _, files in os.walk(ref):
         if "fixtures" in root.split(os.sep):
             continue
-        for f in files:
+        for f in sorted(files):
+            p = os.path.join(root, f)
+            why = _leak_scan_skip(p)
+            if why:
+                skipped.append({"文件": os.path.relpath(p, task.dir), "原因": why})
+                continue
             try:
-                text = open(os.path.join(root, f), encoding="utf-8", errors="ignore").read()
+                text = open(p, encoding="utf-8", errors="ignore").read()
             except OSError:
                 continue
             for m in re.findall(r"-?\d[\d,]*\.?\d*", text):
@@ -869,7 +1009,7 @@ def _gold_numbers(task, lo=1000.0):
                     continue
                 if abs(v) >= lo and not (1900 <= v <= 2100):
                     out.add(v)
-    return out
+    return out, skipped
 
 
 def _check_no_answer_leak(task):
@@ -879,9 +1019,10 @@ def _check_no_answer_leak(task):
     的数 —— 在附件里的数是给定材料，题面复述它不是泄答案。
     白名单：`元数据.题面允许数值`（显式声明，带理由）。
     """
-    gold = _gold_numbers(task)
+    gold, skipped = _gold_numbers(task)
+    skip_note = (["未逐字扫的 reference 文件 %d 个：%s" % (len(skipped), skipped)] if skipped else [])
     if not gold:
-        return True, ["标准答案里没有 ≥1000 的数，本检查不适用"]
+        return True, ["标准答案里没有 ≥1000 的数，本检查不适用"] + skip_note
     seen_in_input = set()
     try:
         wd = tempfile.mkdtemp(prefix="ale_leak_")
@@ -905,9 +1046,9 @@ def _check_no_answer_leak(task):
                   if re.search(r"(?<![\d.])%s(?![\d])" % re.escape("%g" % g), ptext))
     if hits:
         return False, ["题面出现了标准答案里的数（照抄即得分）：%s" % hits[:12],
-                       "若确属题面必须给出的已知量，写进 元数据.题面允许数值 并注明理由"]
+                       "若确属题面必须给出的已知量，写进 元数据.题面允许数值 并注明理由"] + skip_note
     return True, ["gold 大数 %d 个，题面命中 0 个（附件内已给的数 %d 个不计）"
-                  % (len(gold), len(seen_in_input))]
+                  % (len(gold), len(seen_in_input))] + skip_note
 
 
 def _has_placeholder(root):

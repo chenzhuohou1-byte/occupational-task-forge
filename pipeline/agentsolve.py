@@ -30,6 +30,7 @@ read_file 为什么要分页：真实附件动辄几万字符（ALE 的最大单
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -333,6 +334,58 @@ def pages_needed(inputs):
     return sum(max(1, -(-len(v) // PAGE_CHARS)) for v in inputs.values())
 
 
+# 模型把自家原生工具调用的标记（<invoke name=...>、<parameter ...>）当正文吐出来——协议噪声里
+# 最常见的一类。**只计数、不改解析**：解析口径一变，新旧测量就不可比。
+TOOL_MARKUP_RE = re.compile(r"</?(?:invoke|parameter|function_calls)\b")
+
+
+class MeasurementFault(RuntimeError):
+    """测量故障（不是难度信号）。`info` 带本跑走到哪一步、噪声计数、留证文件名，
+    让 n7_run 把它记进结果 json——放弃的槽位也要看得出它是怎么挂的。"""
+
+    def __init__(self, msg, info=None):
+        super().__init__(msg)
+        self.info = info or {}
+
+
+def _repetition(text):
+    """粗看一段输出是不是在原地打转：非空行数、去重行数、最多那一行占比。"""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return {"非空行": 0}
+    top, cnt = max(((ln, lines.count(ln)) for ln in set(lines)), key=lambda x: x[1])
+    return {"非空行": len(lines), "去重行": len(set(lines)), "最多的一行": top[:200],
+            "该行次数": cnt, "该行占比": round(cnt / len(lines), 4)}
+
+
+def fault_record(step, res):
+    """一步「无有效产出」的原始证据：响应全文、网关 usage、finish_reason、请求的 max_tokens、
+    响应头（渠道信息在这里）、流式统计。落盘成 trace 里的 step_XX_fault.json。
+
+    `判读` 只是给人看的初筛（重复输出 / 流没正常结束 / 推理占满 / 未分类），不参与任何判定。
+    """
+    raw = getattr(res, "raw", None) or {}
+    req = raw.get("request") or {}
+    st = raw.get("stream") or {}
+    text = res.text or ""
+    rep = _repetition(text)
+    mt = req.get("max_tokens") or int(os.environ.get("ALE_LLM_MAX_TOKENS", "16000"))
+    if res.finish_reason == "length" and rep.get("非空行", 0) >= 50 and rep.get("该行占比", 0) >= 0.3:
+        why = "疑似重复输出直到 max_tokens（同一行反复出现）"
+    elif not text.strip() and st and not st.get("saw_done"):
+        why = "content 为空且流没有正常结束（无 [DONE]），疑似网关/上游中途断开"
+    elif not text.strip() and (st.get("reasoning_content") or res.reasoning_tokens):
+        why = "content 为空但有推理输出，疑似推理占满预算"
+    else:
+        why = "未分类"
+    return {"step": step, "finish_reason": res.finish_reason, "请求max_tokens": mt,
+            "reasoning_effort": req.get("reasoning_effort"),
+            "prompt_tokens": res.prompt_tokens, "completion_tokens": res.completion_tokens,
+            "reasoning_tokens": res.reasoning_tokens, "content长度": len(text),
+            "工具标记数": len(TOOL_MARKUP_RE.findall(text)), "重复度": rep, "判读": why,
+            "content": text, "raw": raw}
+
+
 def _first_action(text):
     """从模型回复里抠出动作 JSON。复用 qc 的解析器（围栏/夹带散文都能啃）。"""
     obj = qc._extract_json_obj(text)
@@ -385,17 +438,33 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
     ]
 
     trace, written, bad_steps, valid, py_runs, eng_tests = [], 0, 0, 0, 0, 0
+    markup_steps = 0
+
+    def _info(**kw):
+        return {"步数": len(trace), "协议噪声步": bad_steps, "工具标记步": markup_steps, **kw}
+
     try:
         for step in range(max_steps):
             res = llm.chat(msgs)
             if cost:
                 cost.add("N7-agent", res)
             if not res.text.strip() or res.finish_reason == "length":
-                raise RuntimeError(
-                    "agent 档第 %d 步无有效产出（finish_reason=%s, reasoning_tokens=%d）"
-                    % (step + 1, res.finish_reason, res.reasoning_tokens))
+                # 先留证再抛：原来这里只抛一句话，模型到底吐了什么、网关回了什么全丢了
+                rec = fault_record(step + 1, res)
+                name = "step_%02d_fault" % (step + 1)
+                qc._save_trace(trace_dir, **{name: rec})
+                raise MeasurementFault(
+                    "agent 档第 %d 步无有效产出（finish_reason=%s, reasoning_tokens=%d, "
+                    "content %d 字符, 工具标记 %d 处；%s）%s"
+                    % (step + 1, res.finish_reason, res.reasoning_tokens, rec["content长度"],
+                       rec["工具标记数"], rec["判读"],
+                       "原始响应见 %s.json" % name if trace_dir else ""),
+                    _info(故障步=step + 1, 留证文件=(name + ".json") if trace_dir else None,
+                          判读=rec["判读"]))
             msgs.append({"role": "assistant", "content": res.text})
             act = _first_action(res.text)
+            markup = bool(TOOL_MARKUP_RE.search(res.text))
+            markup_steps += markup
             if not act:
                 bad_steps += 1
                 obs = "动作解析失败：每轮只回一个含 action 字段的 JSON 对象，不要别的文字。"
@@ -448,6 +517,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                     obs = "不认识的 action=%r，只许 %sfinish。" % (kind, allowed)
             trace.append({"step": step + 1, "action": (act or {}).get("action", "<解析失败>"),
                           "path": (act or {}).get("path"),
+                          **({"工具标记": True} if markup else {}),
                           # 多页读取的轨迹不记 offset 事后没法复盘它到底读了哪一段
                           **({"offset": (act or {}).get("offset", 0)}
                              if (act or {}).get("action") == "read_file" else {})})
@@ -458,7 +528,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
         # 不管正常结束还是抛故障都落盘：最该复盘的恰恰是出故障那几次
         qc._save_trace(trace_dir, transcript=msgs, actions=trace,
                        meta={"max_steps": max_steps, "toolset": TOOLSETS[tools], "有效动作": valid,
-                             "协议噪声步": bad_steps, "write次数": written,
+                             "协议噪声步": bad_steps, "工具标记步": markup_steps, "write次数": written,
                              "run_python次数": py_runs, "engine_selftest次数": eng_tests,
                              "work_dir": wd})
         # 不可信 engine 自测起过的一次性沙箱必须销毁，绝不残留跑着的引擎
@@ -466,23 +536,25 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
             selftest.close()
 
     if valid == 0:
-        raise RuntimeError("agent 档全程没解析出一个有效动作（%d 步全是协议噪声）" % bad_steps)
+        raise MeasurementFault("agent 档全程没解析出一个有效动作（%d 步全是协议噪声）" % bad_steps,
+                               _info())
     # 步数用完、一个交付文件都没写出来 ＝ **预算不够**，不是不会做（实测：造价 22 份附件，
     # maxSteps=20 光读文件就用完了）。这种 0 分不作为难度信号，记测量故障、让调用方加预算。
     # 看 output/ 实际有没有文件：run_python 也能写交付物，只数 write_file 会误判。
     if not _out_files(out_dir) and len(trace) >= max_steps:
-        raise RuntimeError(
+        raise MeasurementFault(
             "agent 档 %d 步预算耗尽、一个交付文件都没写（光读附件就用完了）：这不是难度，"
-            "是预算不够。调大 N7_MAX_STEPS（附件份数 + 交付文件数 + 一半余量）。" % max_steps)
+            "是预算不够。调大 N7_MAX_STEPS（附件份数 + 交付文件数 + 一半余量）。" % max_steps, _info())
     r = harness.evaluate(task, wd)
     qc._save_trace(trace_dir, work_dir=wd,
                    score=dict(r.raw or {}, _score=r.score, _passed=r.passed,
                               _errors=r.errors, _fault=r.fault))
     if r.fault:
-        raise RuntimeError("判分器故障，本跑不计入难度：" + r.fault[:300])
+        raise MeasurementFault("判分器故障，本跑不计入难度：" + r.fault[:300], _info())
     return True, {"task_id": task.task_id, "score": r.score, "passed": r.passed,
                   "写出文件数": len(_out_files(out_dir)), "toolset": TOOLSETS[tools],
                   "步数": len(trace), "write次数": written, "协议噪声步": bad_steps,
+                  "工具标记步": markup_steps,
                   "run_python次数": py_runs, "engine_selftest次数": eng_tests,
                   "trace": trace, "trace_dir": trace_dir}
 
@@ -495,9 +567,11 @@ class _ScriptedClient:
 
     def chat(self, messages, **kw):
         from .llm import LLMResult
-        text = self.script[min(self.i, len(self.script) - 1)]
+        item = self.script[min(self.i, len(self.script) - 1)]
         self.i += 1
-        return LLMResult(text=text, prompt_tokens=10, completion_tokens=10, model=self.model)
+        if isinstance(item, LLMResult):   # 需要模拟 finish_reason/网关原始响应时直接给成品
+            return item
+        return LLMResult(text=item, prompt_tokens=10, completion_tokens=10, model=self.model)
 
 
 def _selftest():
@@ -596,6 +670,8 @@ def _selftest():
     else:
         raise AssertionError("全程协议噪声居然没抛测量故障")
 
+    _fault_selftest(t)
+
     # 分页：按 offset 切片、告知总长与剩余、读到末尾不再提示继续、offset 越界不崩
     long_text = "".join("第%05d行,数值%d\n" % (i, i) for i in range(2000))   # 约 2.8 万字符
     p1 = _page("大表.csv", long_text, 0)
@@ -636,6 +712,59 @@ def _selftest():
     else:
         raise AssertionError("engine 工具集居然在数值型任务上放行了")
     return True
+
+
+def _fault_selftest(t):
+    """测量故障留证 + 工具标记计数（离线）。
+
+    ① 某步 finish_reason=length 且 content 是原地打转的 <invoke> 块：必须抛 MeasurementFault，
+       trace 里留 step_XX_fault.json（全文、usage、finish_reason、请求 max_tokens、响应头），
+       info 带故障步与留证文件名；② content 为空、流没收到 [DONE]：判读指向中途断开；
+    ③ 夹带 <invoke> 但仍解析出动作的步只计「工具标记步」、不计协议噪声，解析结果不变。
+    """
+    from .llm import LLMResult
+    loop = '<invoke name="x">\n</invoke>\n\n\n\n' * 80
+    raw = {"request": {"model": "m", "max_tokens": 32000, "reasoning_effort": "low"},
+           "usage": {"prompt_tokens": 5907, "completion_tokens": 9919},
+           "headers": {"X-Upstream-Channel": "7", "Request-Id": "r1"},
+           "stream": {"chunks": 3670, "saw_done": True, "delta_keys": {"content": 3670},
+                      "reasoning_content": "", "tool_calls": []}}
+    cases = [
+        (LLMResult(text=loop, finish_reason="length", completion_tokens=9919, raw=raw), "重复输出"),
+        (LLMResult(text="", finish_reason="", raw=dict(raw, stream=dict(raw["stream"], saw_done=False))),
+         "中途断开"),
+    ]
+    for res, why in cases:
+        td = tempfile.mkdtemp(prefix="ale_fault_")
+        try:
+            agent_solve(t, _ScriptedClient([json.dumps({"action": "list_files"}), res]),
+                        max_steps=5, trace_dir=td)
+        except MeasurementFault as e:
+            f = json.load(open(os.path.join(td, "step_02_fault.json"), encoding="utf-8"))
+            assert f["content"] == res.text and f["finish_reason"] == res.finish_reason, f["finish_reason"]
+            assert f["请求max_tokens"] == 32000 and f["raw"]["usage"]["completion_tokens"] == 9919, f
+            assert f["raw"]["headers"]["X-Upstream-Channel"] == "7", "响应头没留下"
+            assert why in f["判读"], f["判读"]
+            assert e.info.get("故障步") == 2 and e.info.get("留证文件") == "step_02_fault.json", e.info
+            assert "step_02_fault.json" in str(e), str(e)
+            meta = json.load(open(os.path.join(td, "meta.json"), encoding="utf-8"))
+            assert meta["有效动作"] == 1, meta
+        else:
+            raise AssertionError("finish_reason=%r 的无效步没抛测量故障" % res.finish_reason)
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+    assert fault_record(1, cases[0][0])["工具标记数"] == 160
+    print("agentsolve 自测⑥测量故障留证 OK（全文/usage/max_tokens/响应头/判读 落进 step_XX_fault.json）")
+
+    ok, r = agent_solve(t, _ScriptedClient([
+        '<invoke name="read_file">\n</invoke>\n' + json.dumps({"action": "list_files"}),
+        '<invoke name="x">\n</invoke>',
+        json.dumps({"action": "finish"}),
+    ]), max_steps=5)
+    assert (r["工具标记步"], r["协议噪声步"], r["步数"]) == (2, 1, 3), r
+    assert [s.get("工具标记") for s in r["trace"]] == [True, True, None], r["trace"]
+    assert r["trace"][0]["action"] == "list_files", "夹带标记的步解析结果变了：%s" % r["trace"][0]
+    print("agentsolve 自测⑦工具标记只计数不改解析 OK（工具标记步 2、协议噪声步 1）")
 
 
 if __name__ == "__main__":

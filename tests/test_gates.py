@@ -298,14 +298,122 @@ def test_basis_ref_suffix():
     shutil.rmtree(d, ignore_errors=True)
 
 
+def _mk_task_dir(files):
+    """临时任务目录：files = {相对任务目录的路径: 内容(str 或 bytes)}。"""
+    import tempfile
+    d = tempfile.mkdtemp(prefix="gates_")
+    for rel, content in files.items():
+        p = os.path.join(d, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(content if isinstance(content, bytes) else content.encode("utf-8"))
+    t = FakeTask({})
+    t.dir = d
+    return t
+
+
+def test_spec_defects():
+    """§6.7 设计缺陷登记：按首道试点卡的写法查结构，gold 路径必须真实存在且不在 input/。"""
+    import copy
+    import shutil
+    print("\n[设计缺陷登记]")
+    t = _mk_task_dir({
+        "assets/input/01_规程.md": "4.2 按月取费率",
+        "assets/input/04_公告.csv": "a,b",
+        "assets/input/sub/05_明细.csv": "x",
+        "assets/reference/expected/combos/D1A_D2A/汇总.csv": "1",
+        "assets/reference/expected/combos/D1B_D2A/汇总.csv": "2",
+        "assets/reference/expected/combos/D1A_D2B/汇总.csv": "3",
+    })
+    good = [
+        {"编号": "D1", "类型": "矛盾", "位置": {"文件": "01_规程.md", "条款": "4.2"},
+         "读法": [{"代码": "D1A", "读法": "全月取第一期", "gold": "assets/reference/expected/combos/D1A_*"},
+                  {"代码": "D1B", "读法": "按生效日期分段", "gold": "assets/reference/expected/combos/D1B_*"}],
+         "命中锚点": {"条款": ["4.2"]}, "影响": "燃油附加费"},
+        {"编号": "D2", "类型": "歧义", "位置": {"文件": "sub/05_明细.csv", "行": "3"},
+         "读法": [{"读法": "实重", "gold": "assets/reference/expected/combos/*_D2A"},
+                  {"读法": "计费重", "gold": "assets/reference/expected/combos/*_D2B"}]},
+    ]
+    T = lambda items: (setattr(t, "card", {"元数据": {"设计缺陷": items}}), t)[1]  # noqa: E731
+    try:
+        for c in ({}, {"元数据": {"机器规格": "2C4G"}}):
+            t.card = c
+            ok, _ = qc._check_spec_defects(t)
+            check(ok, "未声明 设计缺陷 → 不适用、通过：%r" % (c,))
+        ok, d = qc._check_spec_defects(T([]))
+        check(ok and "0 处" in d[0], "空数组（对照题显式声明 0 处）→ 通过")
+        ok, d = qc._check_spec_defects(T(good))
+        check(ok, "试点卡写法（位置对象+类型+读法列表+通配 gold，input 子目录相对路径）→ 通过：%s" % d)
+
+        def broken(mut, label, needle):
+            items = copy.deepcopy(good)
+            mut(items)
+            ok, d = qc._check_spec_defects(T(items))
+            check(not ok and any(needle in x for x in d), "%s → 不通过（%s）" % (label, d[:2]))
+
+        broken(lambda x: x[0].update(类型="错误"), "类型不在 矛盾/歧义/缺漏", "类型")
+        broken(lambda x: x[0]["读法"].pop(), "只有一种读法", "至少两种")
+        broken(lambda x: x[0]["读法"][1].update(gold="assets/reference/expected/combos/D1C_*"),
+               "gold 通配匹配不到任何文件", "不存在")
+        broken(lambda x: x[0]["读法"][1].update(gold="assets/input/01_规程.md"),
+               "gold 落在考生可读的 input/", "assets/input")
+        broken(lambda x: x[0]["读法"][1].update(gold="../outside"), "gold 越出任务目录", "相对路径")
+        broken(lambda x: x[0]["读法"][1].pop("gold"), "读法缺 gold", "gold")
+        broken(lambda x: x[0]["读法"][0].update(读法=""), "读法文字为空", "读法 文字")
+        broken(lambda x: x[0].update(位置="01_规程.md 4.2"), "位置不是对象", "位置")
+        broken(lambda x: x[0]["位置"].update(文件="不存在.md"), "位置.文件 不在 input/", "不在 assets/input")
+        broken(lambda x: x[0]["位置"].pop("条款"), "位置只有文件、没有条款/字段/行", "定位")
+        broken(lambda x: x[1].update(编号="D1"), "编号重复", "编号 重复")
+        broken(lambda x: x[0]["读法"][1].update(代码="D1A"), "同一缺陷的读法代码重复", "代码 重复")
+        items = copy.deepcopy(good)
+        items[0]["位置"]["文件"] = "题面"
+        ok, _ = qc._check_spec_defects(T(items))
+        check(ok, "缺陷在题面里（位置.文件=题面）→ 通过")
+        ok, _ = qc._check_spec_defects(T({"D1": good[0]}))
+        check(not ok, "不是数组 → 不通过")
+    finally:
+        shutil.rmtree(t.dir, ignore_errors=True)
+
+
+def test_leak_scan_skip():
+    """泄答案闸：reference 下二进制（NUL/网格扩展名）与超过阈值的大文件不逐字扫，并列进明细。"""
+    import shutil
+    print("\n[泄答案闸·跳过大文件与二进制]")
+    big = "x" * (qc.LEAK_SCAN_MAX_BYTES + 10) + "\n7777777\n"
+    t = _mk_task_dir({
+        "assets/reference/expected/答案.csv": "合计,123456\n",
+        "assets/reference/model/link.stl": "solid x\nvertex 5555555 1 2\nendsolid\n",
+        "assets/reference/grid.bin2": b"\x00\x01" + b"6666666" + b"\x00",
+        "assets/reference/big.txt": big,
+        "assets/reference/fixtures/output_test_pos/a.csv": "9999999",
+    })
+    try:
+        gold, skipped = qc._gold_numbers(t)
+        check(123456.0 in gold, "普通文本 reference 照常扫出 gold 大数")
+        check(not ({5555555.0, 6666666.0, 7777777.0} & gold),
+              "网格扩展名 / 含 NUL / 超阈值 三类文件里的数不进 gold：%s" % sorted(gold))
+        why = {os.path.basename(x["文件"]): x["原因"] for x in skipped}
+        check(set(why) == {"link.stl", "grid.bin2", "big.txt"}, "跳过清单恰为三个文件：%s" % why)
+        check("网格" in why.get("link.stl", "") and "NUL" in why.get("grid.bin2", "")
+              and "超过" in why.get("big.txt", ""), "跳过原因分别写明：%s" % why)
+        t.card = {"prompt": "请核对合计 123456 与 5555555", "交付要求": {}}
+        ok, d = qc._check_no_answer_leak(t)
+        check(not ok and any("123456" in x for x in d), "题面印了文本 gold → 照样拦下")
+        check(any("未逐字扫" in x and "link.stl" in x for x in d), "明细里列出跳过了哪些文件")
+        check(not any("5555555" in x for x in d if x.startswith("题面出现")),
+              "网格顶点坐标不当 gold 报泄答案")
+    finally:
+        shutil.rmtree(t.dir, ignore_errors=True)
+
+
 def main():
     for fn in (test_tiers, test_tier_rejects, test_purpose, test_majority_repro, test_source,
-               test_tacit_sources, test_basis_ref_suffix):
+               test_tacit_sources, test_basis_ref_suffix, test_spec_defects, test_leak_scan_skip):
         fn()
     if FAILURES:
         print("\n✗ %d 项不符预期：\n  - %s" % (len(FAILURES), "\n  - ".join(FAILURES)))
         return 1
-    print("\n✓ 难度分级/用途/多数票/材料来源/隐性知识出处 全部符合预期")
+    print("\n✓ 难度分级/用途/多数票/材料来源/隐性知识出处/设计缺陷/泄答案闸跳过 全部符合预期")
     return 0
 
 
