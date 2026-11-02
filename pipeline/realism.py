@@ -5,8 +5,8 @@
 
 - 规模：附件总量 ≥ 100KB（ALE 纯命令行子集 P25）、含通用文本之外的格式、有子目录
   （真题配方 v1 第 1 条，见总览 §4 S2′）。
-- 软件：卡上 `software` 写的每一项，考生环境里得真有。对照表 = runtime/examinee/requirements.txt
-  + runtime/software_registry.json。可执行范式的题另查 `evaluation.engine.adapter_args.image`
+- 软件：卡上 `software` 写的每一项，在某个登记过的考生环境里得真有。对照表 = runtime/examinee*/requirements*.txt
+  + runtime/software_registry.json（取并集，只答「有没有」，不答「这道题用的那个镜像里有没有」）。可执行范式的题另查 `evaluation.engine.adapter_args.image`
   是否已登记（只在作者本机的镜像，别人跑不了 qc）。
 """
 import json
@@ -14,7 +14,9 @@ import os
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REQUIREMENTS = os.path.join(ROOT, "runtime", "examinee", "requirements.txt")
+# 所有登记过的考生镜像的包表取并集：非可执行题的卡上不写用哪个镜像，提示只回答「登记过的考生环境里有没有」
+REQUIREMENTS = [os.path.join(ROOT, "runtime", "examinee", "requirements.txt"),
+                os.path.join(ROOT, "runtime", "examinee-bio", "requirements-bio.txt")]
 REGISTRY = os.path.join(ROOT, "runtime", "software_registry.json")
 
 MIN_INPUT_KB = 100
@@ -52,8 +54,10 @@ def scale_hint(task):
 
 def _available():
     pkgs = set()
-    if os.path.exists(REQUIREMENTS):
-        for ln in open(REQUIREMENTS, encoding="utf-8"):
+    for req in REQUIREMENTS:
+        if not os.path.exists(req):
+            continue
+        for ln in open(req, encoding="utf-8"):
             ln = ln.split("#", 1)[0].strip()
             if ln:
                 pkgs.add(_norm(re.split(r"[=<>!~;\[ ]", ln, 1)[0]))
@@ -82,7 +86,7 @@ def software_hint(task, _cache={}):
     images = reg.get("images") or {}
     image = (((task.card.get("evaluation") or {}).get("engine") or {})
              .get("adapter_args") or {}).get("image")
-    extra = {_norm(x) for x in (reg.get("imageSoftware") or {}).get(image or "", [])}
+    extra = {_norm(x) for xs in (reg.get("imageSoftware") or {}).values() for x in xs}
 
     missing, ok = [], []
     for raw in _declared(task.card):

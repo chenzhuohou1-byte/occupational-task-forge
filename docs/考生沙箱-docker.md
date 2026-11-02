@@ -67,3 +67,25 @@ python3 n7_run.py ...
 - 只覆盖 N7 的 `run_python`。casegen 的 worker（`pipeline/sandbox.py`）仍只支持 sandbox-exec。
 - macOS 上 bind mount 走 Docker Desktop 的文件共享（VirtioFS），大量小文件 IO 比原生慢。
 - `output/` 里文件归宿主 uid；若宿主为 root，文件归 65534。
+
+## 5. 生命科学镜像 `ale-examinee:py3.12-bio-v2`（2026-11-02）
+
+给 3.2 基因组、3.3 细胞与成像出题用。**叠在 v1 上**，v1 的 78 个分发一个版本都不动，只新增：
+
+- Python 48 个分发（`runtime/examinee-bio/requirements-bio.txt`，全量钉死）：biopython、pysam、scanpy、anndata、
+  scikit-image、tifffile、h5py、scikit-learn，以及它们拉进来的 numba、umap-learn、matplotlib、statsmodels 等。
+- 命令行工具（Debian 包）：samtools 1.21、bcftools、tabix、bwa、minimap2。
+
+```bash
+docker build -t ale-examinee:py3.12-sci-v1 runtime/examinee        # 先有基础镜像（已有就跳过）
+docker build -t ale-examinee:py3.12-bio-v2 runtime/examinee-bio    # 增量层，本机约 5 分钟，镜像 3.9 GB
+export ALE_RUN_SANDBOX=docker ALE_RUN_DOCKER_IMAGE=ale-examinee:py3.12-bio-v2
+```
+
+- 测量记录的 runtime 标签是 `docker-py3.12-bio-v2`，和 v1 下的测量分开算。默认镜像仍是 v1，只有生命科学题需要切。
+- 构建期冒烟（`smoke_bio.py`）会真跑一遍 scanpy 的 normalize → PCA → neighbors → UMAP；在 `--read-only`、
+  `--network none`、非 root 用户下也实测通过（numba 缓存写到一次性的 HOME）。
+- 内存：Docker Desktop 只分到约 4 GB、考生容器默认 2g。单细胞矩阵题请把输入控制在几万细胞以内，
+  或给这类题单独设 `ALE_RUN_DOCKER_MEMORY`（并在卡上注明）。
+- **没装 cellpose**：它要 PyTorch（CPU 轮子约 1 GB 级），先看 3.3 的题是否真需要深度学习分割再定；
+  传统分割用 scikit-image 即可。
