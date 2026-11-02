@@ -1,0 +1,28 @@
+{
+  "_说明": "考生环境里有什么软件。qc 的「软件提示」拿卡上 `software` 逐项对这张表（契约 §8.2）。Python 包以 runtime/examinee/requirements.txt 为准，这里只登记 requirements 之外的东西：宿主应用、包名与常用叫法不一致的别名、已登记的考生镜像。加软件走框架仓 PR：Python 包改 requirements.txt 并升镜像 tag；宿主应用或新镜像在这里登记。",
+  "aliases": {
+    "pinocchio": "pin",
+    "yosys": "yowasp-yosys",
+    "sumo": "eclipse-sumo",
+    "pil": "pillow",
+    "yaml": "pyyaml",
+    "netcdf4": "netcdf4",
+    "proj": "pyproj"
+  },
+  "hostApps": {
+    "kicad": "macOS 考生环境 py3.12-sci-v3（~/ale-runtime/env.sh 的 ALE_RUN_SOFTWARE），Docker 镜像里没有",
+    "blender": "同上",
+    "inkscape": "同上"
+  },
+  "images": {
+    "ale-examinee:py3.12-sci-v1": "runtime/examinee/Dockerfile",
+    "ale-examinee:cellprofiler-4.2.8": "外部专家 CellProfiler 题（构建定义在 ~/expert-1028/env-cellprofiler，未入库）",
+    "ale-examinee:ltspice-26": "外部专家 LTspice 题（构建定义在 ~/expert-1028/env-ltspice，未入库）",
+    "python:3.12-slim": "Docker 官方镜像，只有标准库",
+    "python:3.11-slim-bookworm": "Docker 官方镜像，只有标准库"
+  },
+  "imageSoftware": {
+    "ale-examinee:cellprofiler-4.2.8": ["cellprofiler"],
+    "ale-examinee:ltspice-26": ["ltspice"]
+  }
+}

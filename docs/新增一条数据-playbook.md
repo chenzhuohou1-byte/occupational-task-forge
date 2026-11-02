@@ -36,6 +36,8 @@ python -m pipeline.cli sync-schema <任务目录>   # 把确切表头/键写回�
 python -m pipeline.cli qc --all                 # 要 进库=True（六条件：四档夹具/独立/可复现/无TODO/scoringBasis非空/难度）
 ```
 
+> **qc 输出里的 `提示`（契约 §8.2）**：「规模」不达标说明附件太小或太像玩具；「软件」报了未装，说明卡上写的软件考生用不了——要么从 `software` 里删掉，要么提框架仓 PR 把它装进考生镜像（`runtime/examinee/`）或登记到 `runtime/software_registry.json`。这两条不拦进库，但新题请尽量都达标。
+
 ## 7. 难度体检（契约 §6.3，决定算不算有效数据）
 ```
 ALE_LLM_MODEL=glm-5.3-flash   ALE_LLM_REASONING_EFFORT=low N7_MODE=agent N7_TOOLS=python N7_RUNS=3  N7_TIER=便宜档 N7_TASK=<id> N7_OUT=runs/n7/<id>-glm.json python3 n7_run.py
