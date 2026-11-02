@@ -11,7 +11,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import generate, qc, scaffold
+from . import generate, qc, realism, scaffold
 from .cost import CostTracker
 
 
@@ -72,6 +72,8 @@ def qc_batch(tasks, cfg, run_id=None):
                 "tier": d.get("tier"), "级别来源": d.get("级别来源"),
                 "N6通过": n6_ok, "N8通过": n8_ok, "难度可判定": d_ok,
                 "进库": n6_ok and n8_ok and d_ok,
+                # §8.2 规模/软件两条只提示、不进「进库」判定
+                "提示": realism.hints(task),
                 "N6": n6, "N8": n8, "难度": d}
 
     rows = _map(_qc, tasks, cfg.concurrency, cfg.max_retries)
@@ -99,7 +101,10 @@ def qc_batch(tasks, cfg, run_id=None):
     summary = {"run_id": run_id, "任务数": len(tasks), "可进库": passed,
                "可进库分级": dict(sorted(tiers.items())),
                "按材料来源": dict(sorted(src_all.items())),
-               "可进库按材料来源": dict(sorted(src_in.items())), "结果": rows}
+               "可进库按材料来源": dict(sorted(src_in.items())),
+               "提示汇总": {"规模不达标": sum(1 for r in rows if not ((r.get("提示") or {}).get("规模") or {}).get("达标", True)),
+                        "软件不在考生环境": sum(1 for r in rows if not ((r.get("提示") or {}).get("软件") or {}).get("达标", True))},
+               "结果": rows}
     _dump(cfg, run_id, "qc.json", summary)
     return summary
 

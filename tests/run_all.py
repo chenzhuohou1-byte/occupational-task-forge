@@ -12,6 +12,7 @@
      工具标记只计数不改解析）
   4) N7 runner 控制流自测（mock provider，不触网；含「凑够 N 个有效跑」、半截不回填、tier 回填）
   5) 难度分级 / 用途闸门 / 大模型判分多数票 / 设计缺陷登记 / 泄答案闸跳过二进制与大文件 单元自测
+  5b) 规模 / 软件两条提示（§8.2，只提示不拦进库）单元自测
   6) 考生 run_python 的 docker 后端（ALE_RUN_SANDBOX=docker）：参数级隔离断言 + 有 docker 时真容器实测
   7) 对自带 `tasks/_demo` 跑 qc：N6/N8 必须全过；难度必须**定不出级**
      （demo 故意是水题且 measuredDifficulty 为空 → 未测 ≠ L1 → 不该进库）
@@ -65,6 +66,10 @@ def check_demo_qc():
     tk = [c for c in row["N6"]["checks"] if c["检查"].startswith("隐性知识出处")]
     if not tk or not tk[0]["通过"]:
         bad.append("N6 缺「隐性知识出处」检查，或 demo 未声明该字段却没通过：%s" % tk)
+    # §8.2 提示接线：demo 是 1 个小 csv → 规模不达标；没写 software → 软件不报；且不影响上面的进库判定
+    tip = row.get("提示") or {}
+    if (tip.get("规模") or {}).get("达标") is not False or (tip.get("软件") or {}).get("达标") is not True:
+        bad.append("§8.2 提示不符预期（demo 应规模不达标、软件不报）：%s" % tip)
     if bad:
         print("✗ _demo qc 行为不符预期：\n  - " + "\n  - ".join(bad))
         return False
@@ -90,6 +95,7 @@ def main():
               "ALE_RUNS_DIR": os.path.join(ROOT, ".ci-runs"),
               "N7_TASK": "demo-procurement-tally-001"})[0],
         _run("难度分级/用途闸门自测", ["tests/test_gates.py"])[0],
+        _run("规模/软件提示自测", ["tests/test_realism.py"])[0],
         # 考生 run_python 的 docker 后端：纯函数部分处处跑；真容器部分本机有 docker 且考生镜像
         # 已构建才跑（CI 无 docker → 自动跳过），镜像不在本地绝不拉取。
         _run("考生沙箱 docker 后端自测", ["tests/test_docker_sandbox.py"])[0],
