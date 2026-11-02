@@ -1,0 +1,52 @@
+# 生命科学镜像 py3.12-bio-v2 在 v1（runtime/examinee/requirements.txt，78 个分发）之上新增的分发，全量钉死含传递依赖。
+# 生成方式（11-02）：在 ale-examinee:py3.12-sci-v1 容器里以 v1 的 pip freeze 作约束 pip install
+#   biopython pysam scanpy anndata scikit-image tifffile h5py scikit-learn，再 diff 前后 freeze 得出；pip check 通过。
+# 约束保证 v1 已有的包一个版本都不动。改这张表就要升镜像 tag。
+anndata==0.13.4
+annotated-types==0.8.0
+array-api-compat==1.16.0
+biopython==1.88
+cloudpickle==3.1.2
+contourpy==1.4.0
+cycler==0.12.1
+donfig==0.8.1.post1
+fast-array-utils==1.5.1
+fonttools==4.68.0
+formulaic==1.2.2
+google-crc32c==1.9.0
+h5py==3.16.0
+ImageIO==2.38.1
+interface_meta==2.0.1
+joblib==1.6.0
+kiwisolver==1.5.1
+lazy-loader==0.6
+legacy-api-wrap==1.5
+llvmlite==0.50.0
+matplotlib==3.11.2
+msgspec==0.22.0
+narwhals==2.28.0
+natsort==8.4.0
+numba==0.68.1
+numcodecs==0.17.1
+patsy==1.0.3
+pydantic==2.14.2
+pydantic-settings==2.16.2
+pydantic_core==2.50.2
+pynndescent==0.7.0
+pyparsing==3.3.3
+pysam==0.24.1
+python-dotenv==1.2.4
+scanpy==1.12.5
+scikit-image==0.26.0
+scikit-learn==1.9.1
+scverse-misc==0.1.8
+seaborn==0.13.2
+session-info2==0.4.2
+statsmodels==0.15.0
+threadpoolctl==3.7.0
+tifffile==2026.10.15
+tqdm==4.70.1
+typing-inspection==0.4.4
+umap-learn==0.5.12
+wrapt==2.5.2
+zarr==3.4.2
