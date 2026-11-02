@@ -7,10 +7,13 @@
 """
 import json
 import os
+import threading
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import generate, harness, scaffold, subdomains as occ
+from . import generate, harness, scaffold, subdomains as occ, traps as _traps
 from .config import PipelineConfig
 from .cost import CostTracker
 from .llm import get_client
@@ -44,6 +47,7 @@ def _tasks_payload():
                     # `难度层` 是 §3 废止字段（自由文本难度标签），所有卡上都是空的，
                     # 看板那颗芯片一直显示「-」。换成 §6.3 的 tier 与 §7.1 的 用途。
                     "tier": c.get("tier") or "", "用途": c.get("用途") or "",
+                    "陷阱模板": (c.get("元数据") or {}).get("陷阱模板") or "",
                     "prompt": c.get("prompt", "")})
     return out
 
@@ -131,6 +135,7 @@ def _board_payload():
             "tier": q.get("tier") or c.get("tier"),
             "级别来源": q.get("级别来源"),
             "用途": q.get("用途") or c.get("用途") or "",
+            "陷阱模板": (c.get("元数据") or {}).get("陷阱模板") or "",
             "N7": md,
             "scoringBasis": len(c.get("scoringBasis") or []),
             "夹具档数": len(ev.get("fixtureScores") or {}),
@@ -146,6 +151,80 @@ def _config_payload():
             "key_tail": ("****" + k[-4:]) if k else "",
             "verify_ssl": CFG.llm.verify_ssl,
             "concurrency": CFG.concurrency, "pass_threshold": CFG.pass_threshold}
+
+
+def _traps_payload():
+    """陷阱模板库：供前端「陷阱模板」面板展示 + 选择。见 pipeline/traps/README.md。"""
+    return _traps.list_traps()
+
+
+# ---- build-case 后台任务（真调网关、耗时数十分钟级），前端轮询查进度 ----
+# 这是「模板怎么存、怎么选」那条交互链路的最后一步：选完模板 → 点一下 → 后台跑 →
+# 轮询看结果；不在 HTTP 请求里同步跑，否则浏览器要挂起数十分钟、一刷新就断。
+_JOBS_LOCK = threading.Lock()
+_JOBS = {}   # job_id -> {"status": "running"|"done"|"error", "log": [...], "report": {...}}
+
+
+def _job_log(job_id, msg):
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        if job is not None:
+            job["log"].append("[%s] %s" % (time.strftime("%H:%M:%S"), msg))
+
+
+def _run_build_case_job(job_id, subdomain, trap_ref, out_dir):
+    from . import casegen_build
+    # casegen_build._stderr_log 读线程局部钩子转发给这里；这段跑在独立线程里，
+    # 钩子只在本线程可见，不影响命令行用法（命令行线程从没设过这个属性）。
+    casegen_build._log_hooks.fn = lambda m: _job_log(job_id, m)
+    try:
+        code = casegen_build.run_build(subdomain, out_dir, trap_ref=trap_ref)
+        rp = os.path.join(out_dir, "report.json")
+        report = json.load(open(rp, encoding="utf-8")) if os.path.isfile(rp) else {}
+        with _JOBS_LOCK:
+            _JOBS[job_id].update(status="done", exit_code=code, report=report)
+    except Exception as e:  # noqa: BLE001 后台线程里的异常不能让它悄悄消失
+        with _JOBS_LOCK:
+            _JOBS[job_id].update(status="error", error=str(e))
+
+
+def _start_build_case_job(subdomain, trap_ref):
+    job_id = uuid.uuid4().hex[:12]
+    out_dir = os.path.join(CFG.runs_dir, "casegen", "web-%s-%s" % (job_id, time.strftime("%Y%m%d-%H%M%S")))
+    with _JOBS_LOCK:
+        _JOBS[job_id] = {"status": "running", "log": [], "subdomain": subdomain,
+                         "trap_ref": trap_ref, "out": out_dir,
+                         "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    t = threading.Thread(target=_run_build_case_job, args=(job_id, subdomain, trap_ref, out_dir), daemon=True)
+    t.start()
+    return job_id
+
+
+def _job_payload(job_id):
+    with _JOBS_LOCK:
+        job = _JOBS.get(job_id)
+        return dict(job, job_id=job_id) if job else None
+
+
+def _trial_trap(subdomain, trap_ref):
+    """陷阱试炼场：同步调用（只 2~3 次模型调用，几十秒级，不像 build_case 要数十分钟，
+    不需要走后台 job 那套）。见 casegen_build.trial_trap 的文档字符串。"""
+    from . import casegen_build
+    from .cost import CostTracker
+    subdomain = (subdomain or "").strip()
+    if not subdomain:
+        return {"error": "缺少 subdomain"}
+    if CFG.llm.provider == "mock":
+        return {"error": "当前 provider=mock：先在「设置」里配好网关才能试炼"}
+    cost = CostTracker()
+    try:
+        out = casegen_build.trial_trap(subdomain, trap_ref or None, cost=cost)
+    except KeyError as e:   # 子域写错
+        return {"error": str(e)}
+    except RuntimeError as e:   # 模型没按格式产出 / provider=mock
+        return {"error": str(e)}
+    out["成本RMB"] = cost.total()
+    return out
 
 
 def _exec_checklist_payload(task):
@@ -287,6 +366,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, _board_payload())
         if p.path == "/api/config":
             return self._send(200, _config_payload())
+        if p.path == "/api/traps":
+            return self._send(200, _traps_payload())
+        if p.path == "/api/traps_show":
+            name = parse_qs(p.query).get("name", [""])[0]
+            try:
+                return self._send(200, {"name": name, "text": _traps.read_trap(name)})
+            except KeyError as e:
+                return self._send(404, {"error": str(e)})
+        if p.path == "/api/build_case_job":
+            job = _job_payload(parse_qs(p.query).get("id", [""])[0])
+            if not job:
+                return self._send(404, {"error": "job 不存在"})
+            return self._send(200, job)
         if p.path == "/api/occupations":
             # 保持返回形状 {分组: [选项…]} 不变（前端下拉直接用），内容换成 ALE 子域码表
             d = occ.load()
@@ -372,6 +464,36 @@ class Handler(BaseHTTPRequestHandler):
                 if "verify_ssl" in body:
                     CFG.llm.verify_ssl = bool(body["verify_ssl"])
                 return self._send(200, _config_payload())
+            if path == "/api/build_case":
+                # 「选模板 → 点一下 → 真造一条数据」：会真调网关、花钱、跑数十分钟，
+                # 刻意不做同步接口（会把浏览器请求挂死），后台起线程、返回 job_id 轮询。
+                subdomain = (body.get("subdomain") or "").strip()
+                trap_ref = (body.get("trap_ref") or "").strip() or None
+                if not subdomain:
+                    return self._send(400, {"error": "缺少 subdomain"})
+                if CFG.llm.provider == "mock":
+                    return self._send(400, {"error": "当前 provider=mock：先在「设置」里配好网关才能真造数据"})
+                if trap_ref:
+                    try:
+                        _traps.read_trap(trap_ref)
+                    except KeyError as e:
+                        return self._send(400, {"error": str(e)})
+                job_id = _start_build_case_job(subdomain, trap_ref)
+                return self._send(200, {"job_id": job_id})
+            if path == "/api/traps_save":
+                # 新建/编辑一个陷阱模板文件。纯文本落盘，不解析内容结构——复用成本必须停在
+                # 「读一遍、改个场景」这个量级，不能要求前端先把陷阱拆成结构化字段才能保存。
+                name = (body.get("name") or "").strip()
+                text = body.get("text") or ""
+                if not name or not text.strip():
+                    return self._send(400, {"error": "name 和 text 都不能为空"})
+                try:
+                    key, is_new = _traps.write_trap(name, text)
+                except _traps.InvalidTrapName as e:
+                    return self._send(400, {"error": str(e)})
+                return self._send(200, {"name": key, "is_new": is_new})
+            if path == "/api/trial_trap":
+                return self._send(200, _trial_trap(body.get("subdomain", ""), body.get("trap_ref")))
         except Exception as e:  # noqa: BLE001
             return self._send(500, {"error": str(e)})
         return self._send(404, {"error": "not found"})

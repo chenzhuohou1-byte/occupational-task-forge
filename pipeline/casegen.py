@@ -247,7 +247,7 @@ def materialize(case_dir, out_root, seed=0, subdomain=None):
     return _materialize_from_payload(p, out_root, subdomain)
 
 
-def _materialize_from_payload(payload, out_root, subdomain=None):
+def _materialize_from_payload(payload, out_root, subdomain=None, trap_ref=None):
     """宿主侧可信半段：scaffold → 写 input/expected → 四档夹具 → 回填 card → sidecar。
     不 import 任何模型代码，只消费 worker 回传的 task/inputs/expected/rules_md/meta。"""
     task = payload["task"]
@@ -265,7 +265,8 @@ def _materialize_from_payload(payload, out_root, subdomain=None):
             "材料来源": {"class": "synthetic", "生成方式": "pipeline_auto",
                      "note": "casegen 闭世界程序化生成（参数生成器 + solve/solve2 双实现交叉复算）"},
             "元数据": {"机器规格": "2C4G", "超时秒": 1800, "判分构成": "纯代码",
-                     "schema": "判分契约 v1.0", "生成方式": "程序化生成"}}
+                     "schema": "判分契约 v1.0", "生成方式": "程序化生成",
+                     **({"陷阱模板": trap_ref} if trap_ref else {})}}
     res = scaffold.scaffold_task(spec, out_root)
     task_dir = res["dir"]
     assets = os.path.join(task_dir, "assets")

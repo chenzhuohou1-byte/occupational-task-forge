@@ -17,14 +17,16 @@ import inspect
 import csv
 import io
 import json
+import math
 import os
 import re
 import shutil
 import sys
+import threading
 import time
 import traceback
 
-from . import casegen, crosscheck, qc, scaffold, subdomains, tasks
+from . import casegen, crosscheck, qc, scaffold, subdomains, tasks, traps
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 EXAMPLE_CASE = os.path.join(_HERE, "crosscheck_cases", "good")
@@ -73,8 +75,16 @@ class FrameworkError(Exception):
     """判分器或地板合成器的问题（如地板在某些字段白拿分）：案例返修修不好，直接停下报出。"""
 
 
+_log_hooks = threading.local()
+
+
 def _stderr_log(msg):
+    """默认落 stderr；额外转发给当前线程注册的钩子（server.py 后台任务用它收集到内存给前端轮询，
+    不影响命令行用法——命令行线程从不设钩子，行为与改动前完全一致）。"""
     print("[casegen %s] %s" % (time.strftime("%H:%M:%S"), msg), file=sys.stderr, flush=True)
+    hook = getattr(_log_hooks, "fn", None)
+    if hook:
+        hook(msg)
 
 
 def _read(path):
@@ -398,7 +408,7 @@ def refs_trace_check(case_dir):
     return None
 
 
-def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, subdomain=None):
+def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, subdomain=None, trap_ref=None):
     """返回 (stage, problem, info)；problem 为 None 表示本轮全过。
 
     冒烟 / 难度门 / crosscheck / 渲染**全部在 casegen 的沙箱 worker 子进程里跑**（模型写的
@@ -429,7 +439,7 @@ def _check_round(case_dir, out_dir, rnd, n, seed, hardness=DEFAULT_HARDNESS, sub
         return "refs", err, None
     try:
         mat = casegen._materialize_from_payload(p, os.path.join(out_dir, "tasks_r%d" % rnd),
-                                                subdomain=subdomain)
+                                                subdomain=subdomain, trap_ref=trap_ref)
     except casegen.FixtureMismatch as e:
         # 负例/地板不符 → 判分器或地板合成器的锅（框架侧）；正例/部分分不符 → 案例侧
         return ("framework" if e.framework_side else "materialize"), "%s\n逐字段线索：\n%s" % (
@@ -493,12 +503,14 @@ def n7_commands(task_dir):
 
 
 def build_case(subdomain, out_dir, producer, max_rounds=3, n=200, seed=0, resume=False, log=None,
-               hardness=DEFAULT_HARDNESS):
+               hardness=DEFAULT_HARDNESS, trap_ref=None):
     log = log or (lambda m: None)
     case_dir = os.path.join(out_dir, "case")
     os.makedirs(case_dir, exist_ok=True)
     report = {"subdomain": subdomain, "out": out_dir, "case_dir": case_dir,
               "resumed": bool(resume), "难度门": dataclasses.asdict(hardness), "rounds": []}
+    if trap_ref:
+        report["陷阱模板"] = trap_ref
 
     def have(*names):
         return resume and all(os.path.isfile(os.path.join(case_dir, x)) for x in names)
@@ -508,8 +520,8 @@ def build_case(subdomain, out_dir, producer, max_rounds=3, n=200, seed=0, resume
         if have("规则.md"):
             log("复用已有 规则.md（不调模型）")
         else:
-            log("① 写规则（solve 侧模型）…")
-            producer.draft_rules(case_dir, subdomain)
+            log("① 写规则（solve 侧模型%s）…" % ("，带陷阱模板 %r" % trap_ref if trap_ref else ""))
+            producer.draft_rules(case_dir, subdomain, trap_ref=trap_ref)
         rules = _read(os.path.join(case_dir, "规则.md"))
         if have(*CODE_FILES):
             log("复用已有 参数生成器/solve/断言/物化")
@@ -523,7 +535,7 @@ def build_case(subdomain, out_dir, producer, max_rounds=3, n=200, seed=0, resume
             producer.write_solve2(case_dir, rules)          # 只交规则原文——独立性的编排层保证
         for rnd in range(1, max_rounds + 1):
             log("第 %d/%d 轮校验：冒烟 → 难度门 → crosscheck(%d 世界) → 物化 → qc …" % (rnd, max_rounds, n))
-            stage, problem, info = _check_round(case_dir, out_dir, rnd, n, seed, hardness, subdomain)
+            stage, problem, info = _check_round(case_dir, out_dir, rnd, n, seed, hardness, subdomain, trap_ref)
             report["rounds"].append({"round": rnd, "stage": stage,
                                      "problem": problem[:1500] if problem else None})
             if problem is None:
@@ -567,7 +579,7 @@ class StaticProducer:
             if os.path.isfile(p):
                 shutil.copy(p, os.path.join(case_dir, nm))
 
-    def draft_rules(self, case_dir, subdomain):
+    def draft_rules(self, case_dir, subdomain, trap_ref=None):
         self._copy(case_dir, ["规则.md"])
 
     def write_code(self, case_dir, rules_text, only_missing=False):
@@ -614,11 +626,26 @@ def _refs_block(refs, manifest, per_file=6000):
     return "\n".join(parts)
 
 
-def rules_messages(subdomain, refs=None, manifest=None):
+def _trap_block(trap_ref):
+    """陷阱模板注入段（见 pipeline/traps/README.md）。只给范例改编，不要求逐字采用、不机械核验——
+    这是跟 _refs_block（真实口径，逐字核验出处）刻意不同的松绑：陷阱能不能套用需要创造性改编，
+    格式越严就越没人愿意投入写模板，复用成本必须压到「读一遍、改个场景」这个量级。"""
+    if not trap_ref:
+        return ""
+    text = traps.read_trap(trap_ref)
+    return (
+        "\n## 陷阱设计参考（来自模板 %r，供改编，不要求逐字采用）\n"
+        "下面是其它领域已验证过有效的陷阱设计范例，含「长什么样 / 为什么有效 / 换个领域怎么套」。"
+        "请在第 5 条「特殊情形处理」里，参照其中至少一条的**结构**（不是字面内容），"
+        "改编成贴合本子域真实业务场景的陷阱——换领域、换场景、换数值，但保留「为什么有效」背后的机制：\n"
+        "```\n%s\n```\n" % (trap_ref, text))
+
+
+def rules_messages(subdomain, refs=None, manifest=None, trap_ref=None):
     h = DEFAULT_HARDNESS
     return [{"role": "system", "content": SOLVE_SYSTEM}, {"role": "user", "content": (
         "【步骤:规则】为下面这个 ALE 子域设计一个 numeric_tabular 范式的闭世界核算任务，写出 规则.md。\n\n"
-        "%s\n%s\n硬要求：\n"
+        "%s\n%s%s\n硬要求：\n"
         "1. 至少 %d 份**独立材料**（如 标准/限值表 + 业务明细 + 登记/委托/台账），每份材料将来单独成一个附件文件，"
         "不得合并成一个文件；计算必须跨材料按关联键 join；\n"
         "2. 规模：业务明细不少于 %d 行、标准/参照表不少于 %d 条；全部附件文本合计至少 %d 字符，"
@@ -641,7 +668,7 @@ def rules_messages(subdomain, refs=None, manifest=None):
         "下面是另一个子域的范例，只示结构、不要照抄内容；"
         "**范例规模很小、只有两份材料，你的案例必须满足上面的规模与特殊情形要求**：\n%s\n"
         "只输出：\n<<<FILE 规则.md>>>\n（规则原文）\n<<<END>>>") % (
-            subdomains.anchor(subdomain), _refs_block(refs or {}, manifest),
+            subdomains.anchor(subdomain), _refs_block(refs or {}, manifest), _trap_block(trap_ref),
             h.min_files, h.min_main_rows, h.min_ref_rows, h.min_total_chars,
             h.min_max_file_chars, h.min_scored_cells, REFS_SECTION,
             h.min_traps, CALIBER_SPEC, _fblock("规则.md", _ex("规则.md")))}]
@@ -818,12 +845,14 @@ class LLMProducer:
         raise InfraError("%s 连续 %d 次没按 <<<FILE>>> 格式产出 %s（见 trace）"
                          % (step, retries + 1, "、".join(sorted(want))))
 
-    def draft_rules(self, case_dir, subdomain):
+    def draft_rules(self, case_dir, subdomain, trap_ref=None):
         refs, manifest = load_refs(case_dir)
         if refs:
             self.log("  （带 %d 份参考资料：%s）" % (len(refs), "、".join(sorted(refs))))
+        if trap_ref:
+            self.log("  （带陷阱模板：%s）" % trap_ref)
         files = self._call_files(self.solve_llm, "rules",
-                                 rules_messages(subdomain, refs, manifest), {"规则.md"})
+                                 rules_messages(subdomain, refs, manifest, trap_ref), {"规则.md"})
         _write_files(case_dir, files, {"规则.md"})
 
     def write_code(self, case_dir, rules_text, only_missing=False):
@@ -859,8 +888,14 @@ class LLMProducer:
 
 # ---------------- CLI ----------------
 def run_build(subdomain=None, out=None, solve_model="gpt-5.5", solve2_model="glm-5.3-flash",
-              rounds=3, n=200, seed=0, resume=None, call_gap=30.0, refs=None):
+              rounds=3, n=200, seed=0, resume=None, call_gap=30.0, refs=None, trap_ref=None):
     """退出码：0 接收 / 1 作废（案例质量） / 2 配置问题 / 3 不是案例的错（网关故障或框架侧问题）。"""
+    if trap_ref:
+        try:
+            traps.read_trap(trap_ref)      # 前置校验：模板名写错了别等造完一轮再暴露
+        except KeyError as e:
+            print("✗ %s" % e, file=sys.stderr)
+            return 2
     from .config import PipelineConfig
     from .cost import CostTracker
     from .llm import get_client
@@ -928,7 +963,8 @@ def run_build(subdomain=None, out=None, solve_model="gpt-5.5", solve2_model="glm
     while True:
         try:
             rep, code = build_case(subdomain, out, prod, max_rounds=rounds, n=n, seed=seed,
-                                   resume=bool(resume) or attempt > 0, log=_stderr_log), 0
+                                   resume=bool(resume) or attempt > 0, log=_stderr_log,
+                                   trap_ref=trap_ref), 0
             break
         except CaseRejected as e:
             rep, code = e.args[0], 1
@@ -958,6 +994,124 @@ def run_build(subdomain=None, out=None, solve_model="gpt-5.5", solve2_model="glm
     print(json.dumps(rep, ensure_ascii=False, indent=2, default=str))
     return code
 
+
+def trial_trap(subdomain, trap_ref, solve_model="gpt-5.5", cost=None):
+    """陷阱试炼场：只起草 规则.md + 挑一个世界 + 单发盲解，不走 crosscheck/物化/N6/N8。
+
+    目的是把「试一个陷阱设计是否可能有效」的成本从一整条 build-case（起草→crosscheck
+    200 世界→物化→qc，数十分钟到小时级）压到 2 次模型调用（几十秒到几分钟），
+    供领域负责人在决定要不要投入全流程前先筛一遍明显不行的陷阱设计。
+
+    **这不是难度判定、不能替代 N7 agent 档实测**——单发盲解本身就会高估难度
+    （见 docs/难度评测方法论.md §三），这里只看「模型是不是完全没栽进这个坑」这种
+    粗粒度信号：盲解直接满分，陷阱大概率没什么用；盲解出错，值得投入全流程验证。
+    """
+    from .llm import get_client
+    from .config import PipelineConfig
+    from . import qc as _qc
+    cfg = PipelineConfig()
+    if cfg.llm.provider == "mock":
+        raise RuntimeError("ALE_LLM_PROVIDER=mock：试炼场要真模型（.env 设 openai + 网关 + key）")
+    llm = get_client(dataclasses.replace(cfg.llm, model=solve_model))
+    sd = subdomains.get(subdomain)   # 子域写错先报错，别等调完模型才发现
+    out = {"subdomain": subdomain, "trap_ref": trap_ref, "model": solve_model}
+
+    # ① 起草规则（只这一步，不写代码/不调 solve2/不 crosscheck）
+    rules_text = casegen_build_call_files_once(
+        llm, rules_messages(subdomain, trap_ref=trap_ref), {"规则.md"}, cost=cost)["规则.md"]
+    out["规则"] = rules_text
+
+    # ② 让同一个模型按规则出一个具体世界 + 该世界的标准答案（不追求 200 世界一致性，
+    #    只要一个能跑的具体案例，供③单发盲解用）
+    world_text = casegen_build_call_files_once(
+        llm, _trial_world_messages(rules_text), {"世界.json", "标准答案.json"}, cost=cost)
+    try:
+        world = json.loads(world_text.get("世界.json", "{}"))
+        expected = json.loads(world_text.get("标准答案.json", "{}"))
+    except json.JSONDecodeError as e:
+        out["问题"] = "模型没按格式输出可解析的 世界.json / 标准答案.json：%s" % e
+        return out
+    out["世界"] = world
+    out["标准答案"] = expected
+
+    # ③ 单发盲解：只给规则 + 世界（不给标准答案），让模型自己做一遍，人工/粗比对
+    blind_text = casegen_build_call_files_once(
+        llm, _trial_blind_messages(rules_text, world), {"我的答案.json"}, cost=cost,
+        system="你是完成真实工作任务的 agent，只依据给定材料作答，不得编造材料外的数字。")
+    try:
+        got = json.loads(blind_text.get("我的答案.json", "{}"))
+    except json.JSONDecodeError as e:
+        out["问题"] = "盲解没按格式输出可解析的 我的答案.json：%s" % e
+        return out
+    out["盲解答案"] = got
+    diffs = _trial_diff(got, expected)
+    out["一致"] = not diffs
+    out["差异"] = diffs[:20]
+    out["粗判"] = ("陷阱可能没生效（盲解与标准答案在容差内一致）——换个思路或加大扰动再试"
+                  if not diffs else
+                  "盲解与标准答案有 %d 处不一致，值得投入 build-case 全流程验证（仍需 N7 agent 档定级；"
+                  "标准答案也是模型现编的，先人工看一眼差异是不是标准答案自己错了）" % len(diffs))
+    return out
+
+
+def _trial_diff(got, exp, path="", tol=1e-6):
+    """试炼粗比对：数值按相对/绝对容差，dict 按键、list 按位；返回差异路径列表。
+    比 `==` 宽容的只有浮点误差——结构、键名、条目数不同照样算不一致。"""
+    if isinstance(exp, dict):
+        if not isinstance(got, dict):
+            return ["%s: 类型不同" % (path or "根")]
+        out = ["%s.%s: 缺失" % (path, k) for k in exp if k not in got]
+        out += ["%s.%s: 多出" % (path, k) for k in got if k not in exp]
+        for k in exp:
+            if k in got:
+                out += _trial_diff(got[k], exp[k], "%s.%s" % (path, k), tol)
+        return out
+    if isinstance(exp, list):
+        if not isinstance(got, list) or len(got) != len(exp):
+            return ["%s: 列表长度/类型不同" % (path or "根")]
+        return sum((_trial_diff(g, e, "%s[%d]" % (path, i), tol)
+                    for i, (g, e) in enumerate(zip(got, exp))), [])
+    if isinstance(exp, bool):
+        return [] if isinstance(got, bool) and got == exp else ["%s: %r ≠ %r" % (path or "根", got, exp)]
+    if not isinstance(exp, (int, float)):
+        return [] if got == exp else ["%s: %r ≠ %r" % (path or "根", got, exp)]
+    if isinstance(got, bool) or not isinstance(got, (int, float)):
+        return ["%s: %r ≠ %r" % (path or "根", got, exp)]
+    return [] if math.isclose(got, exp, rel_tol=tol, abs_tol=tol) else \
+        ["%s: %r ≠ %r" % (path or "根", got, exp)]
+
+
+def casegen_build_call_files_once(llm, messages, want, cost=None, system=None):
+    """试炼场专用的最小化单次调用+解析，不复用 LLMProducer（那个绑定返修/轨迹/续跑状态，
+    试炼场要的是「调一次、拿文件、完」，接上那套反而要为不需要的状态负责）。"""
+    if system:
+        messages = [{"role": "system", "content": system}] + [m for m in messages if m["role"] != "system"]
+    res = llm.chat(messages)
+    if cost:
+        cost.add("trial_trap", res)
+    files = parse_files(res.text or "")
+    missing = set(want) - set(files)
+    if missing:
+        raise RuntimeError("模型没按 <<<FILE>>> 格式产出 %s（试炼场不重试，直接报告，"
+                           "原始响应前 300 字：%s）" % ("、".join(sorted(missing)), (res.text or "")[:300]))
+    return files
+
+
+def _trial_world_messages(rules_text):
+    return [{"role": "system", "content": SOLVE_SYSTEM}, {"role": "user", "content": (
+        "【步骤:试炼-出一个具体世界】按下面的 规则.md，编一个具体的世界参数（覆盖至少一类"
+        "「特殊情形处理」），并严格按规则推出标准答案。只输出两个文件：\n"
+        "<<<FILE 世界.json>>>\n（世界参数的具体 JSON 值，不是结构说明）\n<<<END>>>\n"
+        "<<<FILE 标准答案.json>>>\n（严格按规则从上面世界推出的答案 JSON）\n<<<END>>>\n\n"
+        "规则：\n%s") % rules_text}]
+
+
+def _trial_blind_messages(rules_text, world):
+    return [{"role": "user", "content": (
+        "下面是一份业务规则与一组具体材料，请按规则算出答案。只输出一个文件：\n"
+        "<<<FILE 我的答案.json>>>\n（你算出的答案 JSON）\n<<<END>>>\n\n"
+        "规则：\n%s\n\n材料（世界参数）：\n%s") % (
+            rules_text, json.dumps(world, ensure_ascii=False, indent=2))}]
 
 def _batch_report(root, rows, t0):
     acc = [r for r in rows if r["status"] == "accepted"]

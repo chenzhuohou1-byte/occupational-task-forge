@@ -75,6 +75,7 @@
       <button onclick="toggleSelect()">选材(N1)</button>
       <button onclick="toggleForm()">＋ 造新任务</button>
       <button onclick="toggleExecGuide()">可执行范式指引</button>
+      <button onclick="toggleTraps()">陷阱模板 → 造数据</button>
       <button onclick="toggleSettings()">⚙ 设置(LLM)</button>
     </div>
 
@@ -87,6 +88,50 @@
         <select id="s_occ"></select></div>
       <div class="btns"><button class="primary" onclick="runSelect()">生成工作面</button></div>
       <div id="faces"></div>
+    </div>
+
+    <div class="card" id="trapsPanel" style="display:none">
+      <h3>陷阱模板库</h3>
+      <div class="meta">
+        <code>pipeline/traps/*.md</code> 里已验证过有效的陷阱设计范例，按领域分文件存，供起草新题时
+        参照改编——<b>不是机器契约</b>，不强制逐字采用、不解析内部结构，最终难度仍靠 N7 实测。
+      </div>
+      <div class="frow"><label>模板</label>
+        <select id="t_trap" onchange="showTrapPreview()">
+          <option value="">（不使用，走通用陷阱菜单）</option>
+        </select>
+        <button onclick="refreshTraps()">刷新</button>
+        <button onclick="newTrapTemplate()">＋ 新建/编辑模板</button></div>
+      <div id="trapPreview" class="prompt" style="max-height:140px;white-space:pre-wrap"></div>
+
+      <div id="trapEditForm" style="display:none;margin-top:10px;border-top:1px solid #263149;padding-top:10px">
+        <div class="meta">名称 = 文件名（不带 .md），内容自然语言、不限格式——见
+          <code>pipeline/traps/README.md</code> 建议写「长什么样 / 为什么有效 / 换领域怎么套」。</div>
+        <div class="frow"><label>模板名</label><input id="te_name" placeholder="如 工程造价 / 6.1"></div>
+        <div class="efile"><textarea id="te_text" rows="10" placeholder="## 陷阱标题&#10;&#10;- 长什么样：…&#10;- 为什么有效：…&#10;- 换领域怎么套：…"></textarea></div>
+        <div class="btns">
+          <button class="primary" onclick="saveTrapTemplate()">保存</button>
+          <button onclick="$('trapEditForm').style.display='none'">取消</button></div>
+      </div>
+
+      <h3 style="margin-top:16px">陷阱试炼（轻量，几十秒级）</h3>
+      <div class="meta">
+        只起草规则 + 编一个世界 + 单发盲解，<b>不走 crosscheck/物化/qc</b>——目的是用极低成本
+        （2~3 次模型调用）先粗判「这个陷阱设计大概有没有戏」，再决定要不要投入下面的全流程。
+        <b>不是难度判定</b>，盲解本身会高估难度，仅供筛掉明显不行的设计。
+      </div>
+      <div class="frow"><label>目标子域</label><input id="tr_subdomain" placeholder="如 6.1"></div>
+      <div class="btns"><button class="primary" onclick="runTrialTrap()">试炼一次（用当前选中模板）</button></div>
+      <div id="trialOut"></div>
+
+      <h3 style="margin-top:16px">正式造题（build-case --trap-ref）</h3>
+      <div class="meta">
+        跑完整条 起草→crosscheck(200 世界)→物化→qc；<b>要几分钟到数十分钟，会花钱</b>。
+        建议先用上面的「陷阱试炼」粗筛过再投入。
+      </div>
+      <div class="frow"><label>目标子域</label><input id="t_subdomain" placeholder="如 6.1（见命令行 subdomains 列表）"></div>
+      <div class="btns"><button class="primary" onclick="startBuildCase()">开始造题</button></div>
+      <div id="trapJobOut"></div>
     </div>
 
     <div class="card" id="settingsPanel" style="display:none">
@@ -198,11 +243,12 @@ async function loadTasks(){
 
 function cardHtml(t){
   const id = t.task_id;
+  const trapTag = t["陷阱模板"] ? `<span class="tag" title="起草时注入的陷阱模板">🪤 ${escapeHtml(t["陷阱模板"])}</span>` : "";
   return `<div class="trow" title="${escapeHtml(t.prompt||"")}">
     <div class="tname"><b>${escapeHtml(t["任务名"]||id)}</b>
       <span class="tag">${escapeHtml(t["领域"]||"-")}</span>
       <span class="tag">${escapeHtml(t["tier"]||"未定级")}</span>
-      <span class="tag">${escapeHtml(t["用途"]||"用途未声明")}</span></div>
+      <span class="tag">${escapeHtml(t["用途"]||"用途未声明")}</span>${trapTag}</div>
     <div class="tbtns">
       <button class="primary" onclick="run('${id}','golden')">标准解</button>
       <button class="warn" onclick="run('${id}','neg')">负例</button>
@@ -286,6 +332,7 @@ function renderBoard(data){
       <td>${kuCell}</td>
       <td style="text-align:center">${tierCell}</td>
       <td style="text-align:center;font-size:12px">${escapeHtml(t["用途"]||"—")}</td>
+      <td style="font-size:12px">${t["陷阱模板"] ? "🪤 "+escapeHtml(t["陷阱模板"]) : '<span style="color:#8b98b4">—</span>'}</td>
       <td style="font-size:12px">${n7}</td>
       <td style="text-align:center">${t.scoringBasis}</td>
       <td style="text-align:center">${t["夹具档数"]}</td>
@@ -295,7 +342,7 @@ function renderBoard(data){
     `<table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="text-align:left;color:#8b98b4;border-bottom:1px solid #33415f">
         <th>领域</th><th>任务名</th><th>负责人</th><th>qc进库</th><th>tier</th><th>用途</th>
-        <th>N7 测量（agent 档才定级）</th><th>依据</th><th>夹具</th>
+        <th>陷阱模板</th><th>N7 测量（agent 档才定级）</th><th>依据</th><th>夹具</th>
       </tr></thead><tbody>${rows}</tbody></table>` + rawBlock(data);
 }
 async function loadBoard(){
@@ -342,6 +389,118 @@ function toggleForm(){
 function toggleExecGuide(){
   const f = $("execGuide");
   f.style.display = f.style.display === "none" ? "block" : "none";
+}
+let TRAPS = null;
+async function toggleTraps(){
+  const p = $("trapsPanel");
+  const showing = p.style.display === "none";
+  p.style.display = showing ? "block" : "none";
+  if (showing && !TRAPS) await refreshTraps();
+}
+async function refreshTraps(){
+  setStatus("加载陷阱模板库…");
+  TRAPS = await api("/api/traps");
+  const sel = $("t_trap");
+  const cur = sel.value;
+  const opts = (TRAPS||[]).map(t =>
+    `<option value="${escapeHtml(t["名称"])}">${escapeHtml(t["名称"])}（${t["陷阱条目"].length} 条）</option>`);
+  sel.innerHTML = `<option value="">（不使用，走通用陷阱菜单）</option>` + opts.join("");
+  if (cur) sel.value = cur;
+  showTrapPreview();
+  setStatus(`共 ${(TRAPS||[]).length} 个陷阱模板文件`);
+}
+async function showTrapPreview(){
+  const name = $("t_trap").value;
+  const box = $("trapPreview");
+  if (!name){ box.textContent = ""; return; }
+  const r = await api("/api/traps_show?name=" + encodeURIComponent(name));
+  box.textContent = r && r.text ? r.text : ((r && r.error) || "读取失败");
+}
+function newTrapTemplate(){
+  const cur = $("t_trap").value;
+  $("te_name").value = cur || "";
+  $("te_text").value = cur ? ($("trapPreview").textContent || "") : "";
+  $("trapEditForm").style.display = "block";
+}
+async function saveTrapTemplate(){
+  const name = $("te_name").value.trim();
+  const text = $("te_text").value;
+  if (!name || !text.trim()){ setStatus("模板名和内容都不能为空"); return; }
+  setStatus("保存模板…");
+  const r = await api("/api/traps_save", "POST", {name, text});
+  if (!r || r.error){ setStatus("保存失败：" + ((r && r.error) || "未知错误")); return; }
+  $("trapEditForm").style.display = "none";
+  await refreshTraps();
+  $("t_trap").value = r.name;
+  showTrapPreview();
+  setStatus((r.is_new ? "已新建模板 " : "已更新模板 ") + r.name);
+}
+async function runTrialTrap(){
+  const subdomain = $("tr_subdomain").value.trim();
+  const trap_ref = $("t_trap").value;
+  if (!subdomain){ setStatus("请先填目标子域（如 6.1）"); return; }
+  setStatus("陷阱试炼中（2~3 次模型调用，几十秒到几分钟）…");
+  $("trialOut").innerHTML = `<div class="meta">运行中…</div>`;
+  const r = await api("/api/trial_trap", "POST", {subdomain, trap_ref});
+  if (!r || r.error){
+    $("trialOut").innerHTML = `<div class="bad">试炼失败：${escapeHtml((r && r.error) || "未知错误")}</div>`;
+    setStatus("试炼失败"); return;
+  }
+  if (r["问题"]){
+    $("trialOut").innerHTML = `<div class="bad">${escapeHtml(r["问题"])}</div>` + rawBlock(r);
+    setStatus("试炼未产出可判结果"); return;
+  }
+  const ok = r["一致"];
+  $("trialOut").innerHTML =
+    `<div class="${ok ? "bad" : "ok"}">${escapeHtml(r["粗判"] || "")}</div>
+     <div class="meta">成本约 ¥${r["成本RMB"] ?? "?"}${trap_ref ? "，模板「" + escapeHtml(trap_ref) + "」" : ""}</div>
+     ${(r["差异"]||[]).length ? `<div class="meta">差异（前 20 处）：</div><pre style="max-height:140px">${escapeHtml(r["差异"].join("\n"))}</pre>` : ""}
+     <div class="prompt" style="max-height:160px;white-space:pre-wrap">${escapeHtml(r["规则"] || "")}</div>` +
+    rawBlock(r);
+  setStatus(ok ? "试炼完成：盲解与标准答案一致" : "试炼完成：盲解未对上，值得投入全流程");
+}
+let TRAP_JOB_TIMER = null;
+async function startBuildCase(){
+  const subdomain = $("t_subdomain").value.trim();
+  const trap_ref = $("t_trap").value;
+  if (!subdomain){ setStatus("请先填目标子域（如 6.1）"); return; }
+  const note = trap_ref ? `带陷阱模板「${trap_ref}」` : "不带模板（通用陷阱菜单）";
+  if (!confirm(`将对子域 ${subdomain} 起草一条新数据，${note}。\n会真调模型、花钱、跑数十分钟，确定继续？`)){
+    setStatus("已取消"); return;
+  }
+  setStatus("提交造题任务…");
+  const r = await api("/api/build_case", "POST", {subdomain, trap_ref});
+  if (!r || !r.job_id){
+    $("trapJobOut").innerHTML = `<div class="bad">提交失败：${escapeHtml((r && r.error) || "未知错误")}</div>`;
+    setStatus("提交失败"); return;
+  }
+  setStatus("已提交，后台运行中（job " + r.job_id + "）");
+  pollBuildCaseJob(r.job_id);
+}
+async function pollBuildCaseJob(jobId){
+  if (TRAP_JOB_TIMER) clearInterval(TRAP_JOB_TIMER);
+  const render = (j) => {
+    const lines = (j.log||[]).slice(-30).join("\n");
+    let foot = "";
+    if (j.status === "done"){
+      const acc = j.report && j.report.status === "accepted";
+      foot = `<div class="${acc?"ok":"bad"}">完成：status=${escapeHtml(j.report && j.report.status || "?")}`
+        + (j.report && j.report.task_dir ? `，task_dir=${escapeHtml(j.report.task_dir)}` : "") + `</div>`;
+    } else if (j.status === "error"){
+      foot = `<div class="bad">后台任务异常：${escapeHtml(j.error||"")}</div>`;
+    } else {
+      foot = `<div class="meta">运行中…（子域 ${escapeHtml(j.subdomain||"")}${j.trap_ref?"，模板 "+escapeHtml(j.trap_ref):""}）</div>`;
+    }
+    $("trapJobOut").innerHTML = foot + `<pre style="max-height:40vh">${escapeHtml(lines||"（暂无日志）")}</pre>`;
+  };
+  const tick = async () => {
+    const j = await api("/api/build_case_job?id=" + encodeURIComponent(jobId));
+    if (!j || j.error){ clearInterval(TRAP_JOB_TIMER); return; }
+    render(j);
+    if (j.status !== "running"){ clearInterval(TRAP_JOB_TIMER); setStatus("造题任务已结束：" + j.status); loadTasks(); }
+  };
+  await tick();
+  TRAP_JOB_TIMER = setInterval(tick, 4000);
 }
 function onParadigm(){
   const exec = $("f_paradigm").value === "executable_artifact";

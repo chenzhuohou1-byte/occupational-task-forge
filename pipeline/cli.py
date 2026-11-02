@@ -78,6 +78,14 @@ def main(argv=None):
     pg.add_argument("--call-gap", type=float, default=30.0, help="同一模型两次调用的最小间隔秒数（防 429）")
     pg.add_argument("--refs", help="参考资料目录（人工抓好的真实口径材料 + 来源.json），"
                                    "给了就要求规则.md 声明「## 引用来源」并逐字核验")
+    pg.add_argument("--trap-ref", help="陷阱模板名（pipeline/traps/<名>.md，见 `traps list`），"
+                                       "注入起草 prompt 供模仿改编；不传=照旧走通用陷阱菜单")
+
+    pt = sub.add_parser("traps", help="陷阱模板库：存取 pipeline/traps/*.md（见 pipeline/traps/README.md）")
+    pt_sub = pt.add_subparsers(dest="traps_cmd", required=True)
+    pt_sub.add_parser("list", help="列出所有陷阱模板文件 + 每个文件里的条目标题")
+    pt_show = pt_sub.add_parser("show", help="打印某个陷阱模板文件全文")
+    pt_show.add_argument("name", help="模板名（文件名去掉 .md），如 工程造价")
 
     pn = sub.add_parser("build-case-batch",
                         help="连跑 N 次 build-case，实测产出率（每次尝试产出一条可用数据的比率）")
@@ -146,12 +154,24 @@ def main(argv=None):
     if args.cmd == "crosscheck":
         return _crosscheck.run_cli(args.case, args.n, args.seed, args.tol)
 
+    if args.cmd == "traps":
+        from . import traps as _traps
+        if args.traps_cmd == "list":
+            _pp(_traps.list_traps())
+        elif args.traps_cmd == "show":
+            try:
+                print(_traps.read_trap(args.name))
+            except KeyError as e:
+                print("✗ %s" % e, file=sys.stderr)
+                return 2
+        return 0
+
     if args.cmd == "build-case":
         from . import casegen_build
         return casegen_build.run_build(args.subdomain, args.out, args.solve_model,
                                        args.solve2_model, args.rounds, args.n,
                                        resume=args.resume, call_gap=args.call_gap,
-                                       refs=args.refs)
+                                       refs=args.refs, trap_ref=args.trap_ref)
 
     if args.cmd == "build-case-batch":
         from . import casegen_build
