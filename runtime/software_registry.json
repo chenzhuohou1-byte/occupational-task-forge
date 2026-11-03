@@ -25,7 +25,8 @@
     "ale-examinee:ltspice-26": "外部专家 LTspice 题（构建定义在 ~/expert-1028/env-ltspice，未入库）",
     "python:3.12-slim": "Docker 官方镜像，只有标准库",
     "python:3.11-slim-bookworm": "Docker 官方镜像，只有标准库",
-    "ale-examinee:py3.12-bio-v2": "runtime/examinee-bio/Dockerfile（叠在 v1 上，加 requirements-bio.txt 与 samtools 等命令行工具）"
+    "ale-examinee:py3.12-bio-v2": "runtime/examinee-bio/Dockerfile（叠在 v1 上，加 requirements-bio.txt 与 samtools 等命令行工具）",
+    "ale-examinee:py3.12-ext-v3": "runtime/examinee-ext/Dockerfile（叠在 bio-v2 上，加 requirements-ext.txt：pyranges/pyhmmer/pydicom/SimpleITK/lifelines/rasterio/wntr）"
   },
   "imageSoftware": {
     "ale-examinee:cellprofiler-4.2.8": [

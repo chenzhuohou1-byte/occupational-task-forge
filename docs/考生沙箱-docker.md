@@ -89,3 +89,23 @@ export ALE_RUN_SANDBOX=docker ALE_RUN_DOCKER_IMAGE=ale-examinee:py3.12-bio-v2
   或给这类题单独设 `ALE_RUN_DOCKER_MEMORY`（并在卡上注明）。
 - **没装 cellpose**：它要 PyTorch（CPU 轮子约 1 GB 级），先看 3.3 的题是否真需要深度学习分割再定；
   传统分割用 scikit-image 即可。
+
+## 6. 扩展镜像 `ale-examinee:py3.12-ext-v3`（2026-11-03）
+
+补 bio-v2 里没有的专业包，给序列/区间、HMM、医学影像、生存分析、栅格、供水管网题用。**叠在 bio-v2 上**，已有分发一个版本都不动，只新增
+（`runtime/examinee-ext/requirements-ext.txt`，全量钉死）：
+
+- pyranges 0.1.7（含 ncls、sorted-nearest、tabulate）、pyhmmer 0.12.3（含 psutil）、pydicom 3.0.2、SimpleITK 2.5.7、
+  lifelines 0.30.0（含 autograd、autograd-gamma）、rasterio 1.5.2（含 affine）、wntr 1.5.0（带 EPANET 2.2 求解器）。
+
+```bash
+docker build -t ale-examinee:py3.12-ext-v3 runtime/examinee-ext    # 先有 v1、bio-v2
+export ALE_RUN_SANDBOX=docker ALE_RUN_DOCKER_IMAGE=ale-examinee:py3.12-ext-v3
+```
+
+- 测量记录的 runtime 标签是 `docker-py3.12-ext-v3`。
+- ncls、sorted-nearest 在 PyPI 上没有 aarch64 轮子，Dockerfile 用一次性的构建阶段（gcc）编出轮子再装，最终镜像不带编译器。
+- wntr 1.5.0 在 PyPI 上只有 x86_64 Linux 轮子（无 aarch64 Linux），arm64 本机请用 `ALE_RUN_DOCKER_PLATFORM=linux/amd64`
+  跑 x86_64 镜像，或 CI 上构建；本机 arm64 的 `Dockerfile.local` 因此不装 wntr，冒烟脚本会自动跳过它。
+- **没装 pydssp**：它 import 时无条件 import torch，x86_64 的 PyPI torch 还会拖 CUDA 全家桶（数 GB）。
+  二级结构题请改用 Bio.PDB 自己实现判据，或另议 CPU 版 torch 的装法。

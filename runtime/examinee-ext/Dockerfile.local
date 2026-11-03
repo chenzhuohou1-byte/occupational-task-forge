@@ -1,0 +1,11 @@
+# 本地构建：wheel 已在宿主准备好放在 wheels/（PyPI 轮子用 pip download --no-deps --only-binary=:all: --platform manylinux*_aarch64 下好，
+# ncls/sorted_nearest 在 python:3.12-slim + gcc 的容器里 pip wheel 出来），离线安装，版本仍由 requirements-ext.txt 钉死。
+FROM ale-examinee:py3.12-bio-v2
+COPY requirements-ext.txt /opt/ale/requirements-ext.txt
+COPY wheels /opt/ale/wheels
+RUN pip install --no-cache-dir --no-deps --no-index --find-links /opt/ale/wheels \
+        $(grep -vE '^(#|wntr)' /opt/ale/requirements-ext.txt | grep -v '^$') \
+ && pip check
+COPY smoke_ext.py /opt/ale/smoke_ext.py
+RUN python /opt/ale/smoke_ext.py && chmod -R a+rX /usr/local/lib/python3.12/site-packages
+WORKDIR /work
