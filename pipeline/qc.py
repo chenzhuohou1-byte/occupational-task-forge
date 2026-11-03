@@ -37,6 +37,17 @@ def task_purpose(task):
     return (v if v in PURPOSES else "测试集"), v in PURPOSES
 
 
+def purpose_tier_ok(purpose, tier, src):
+    """§6.5：测试集只收实测 L2 及以上。返回 (是否相符, 说明)。训练集不限；定不出级时不在这里判（另有难度闸）。"""
+    if purpose != "测试集" or not tier:
+        return True, ""
+    if tier == "L1":
+        return False, "测试集只收实测 L2 及以上：当前 L1，用途改训练集"
+    if src != "实测":
+        return False, "测试集只收实测 L2 及以上：当前 %s 为推定级，补测到实测或改训练集" % tier
+    return True, ""
+
+
 def task_source(task):
     """§3 材料来源：返回 (class, 生成方式, 是否已声明)。
 

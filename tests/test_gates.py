@@ -147,6 +147,10 @@ def test_purpose():
     check(qc.task_purpose(FakeTask({"用途": "训练集"})) == ("训练集", True), "声明训练集 → 训练集")
     check(qc.task_purpose(FakeTask({"用途": "瞎写"})) == ("测试集", False),
           "用途 取值非法 → 不静默接受，按测试集严判")
+    check(qc.purpose_tier_ok("测试集", "L1", "实测")[0] is False, "§6.5 测试集 + L1 → 不相符")
+    check(qc.purpose_tier_ok("测试集", "L3+", "推定")[0] is False, "§6.5 测试集 + 推定级 → 不相符")
+    check(qc.purpose_tier_ok("测试集", "L2", "实测") == (True, ""), "§6.5 测试集 + 实测 L2 → 相符")
+    check(qc.purpose_tier_ok("训练集", "L1", "实测") == (True, ""), "§6.5 训练集不限级别")
 
 
 def test_majority_repro():

@@ -49,7 +49,7 @@ def _dump(cfg, run_id, name, payload):
 
 
 def qc_batch(tasks, cfg, run_id=None):
-    """批量 QC。**「进库」= N6 ∧ N8 ∧ 难度可判定（tier 算得出来）**。
+    """批量 QC。**「进库」= N6 ∧ N8 ∧ 难度可判定（tier 算得出来）∧ 用途级别相符（测试集只收实测 L2+，§6.5）**。
 
     2026-10-14 口径变更（契约 §6.3）：难度从**准入门槛**改成**标签**。原来第三项是
     「难度门槛通过」（便宜档满分率必须 = 0 且前沿档 ≤ 1/3），那是一道硬过滤、会把所有
@@ -67,11 +67,14 @@ def qc_batch(tasks, cfg, run_id=None):
         n8_ok, n8 = qc.n8_floor_audit(task, cfg.floor)
         d_ok, d = qc.difficulty_tier(task)
         src, gen, _ = qc.task_source(task)
+        u_ok, u_why = qc.purpose_tier_ok(n6.get("用途"), d.get("tier"), d.get("级别来源"))
         return {"task_id": task.task_id, "用途": n6.get("用途"),
                 "材料来源": src, "生成方式": gen or "未声明",
                 "tier": d.get("tier"), "级别来源": d.get("级别来源"),
                 "N6通过": n6_ok, "N8通过": n8_ok, "难度可判定": d_ok,
-                "进库": n6_ok and n8_ok and d_ok,
+                # §6.5：测试集只收实测 L2 及以上（2026-11-03）
+                "用途级别相符": u_ok, **({"用途级别说明": u_why} if u_why else {}),
+                "进库": n6_ok and n8_ok and d_ok and u_ok,
                 # §8.2 规模/软件两条只提示、不进「进库」判定
                 "提示": realism.hints(task),
                 "N6": n6, "N8": n8, "难度": d}
