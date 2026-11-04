@@ -99,13 +99,21 @@ export ALE_RUN_SANDBOX=docker ALE_RUN_DOCKER_IMAGE=ale-examinee:py3.12-bio-v2
   lifelines 0.30.0（含 autograd、autograd-gamma）、rasterio 1.5.2（含 affine）、wntr 1.5.0（带 EPANET 2.2 求解器）。
 
 ```bash
-docker build -t ale-examinee:py3.12-ext-v3 runtime/examinee-ext    # 先有 v1、bio-v2
-export ALE_RUN_SANDBOX=docker ALE_RUN_DOCKER_IMAGE=ale-examinee:py3.12-ext-v3
+# x86_64（先有 v1、bio-v2）
+docker build -t ale-examinee:py3.12-ext-v3 runtime/examinee-ext
+# arm64：装不了 wntr，只能建不含 wntr 的变体，tag 不同
+docker build --build-arg WITH_WNTR=0 -t ale-examinee:py3.12-ext-v3-nowntr runtime/examinee-ext
+export ALE_RUN_SANDBOX=docker ALE_RUN_DOCKER_IMAGE=ale-examinee:py3.12-ext-v3   # 或 …-ext-v3-nowntr
 ```
 
-- 测量记录的 runtime 标签是 `docker-py3.12-ext-v3`。
+- 测量记录的 runtime 标签是 `docker-py3.12-ext-v3` 或 `docker-py3.12-ext-v3-nowntr`。两者除 wntr 外内容相同，
+  不用 wntr 的题两种测量可以互认；**用 wntr 的题只认 ext-v3 的测量**。
 - ncls、sorted-nearest 在 PyPI 上没有 aarch64 轮子，Dockerfile 用一次性的构建阶段（gcc）编出轮子再装，最终镜像不带编译器。
-- wntr 1.5.0 在 PyPI 上只有 x86_64 Linux 轮子（无 aarch64 Linux），arm64 本机请用 `ALE_RUN_DOCKER_PLATFORM=linux/amd64`
-  跑 x86_64 镜像，或 CI 上构建；本机 arm64 的 `Dockerfile.local` 因此不装 wntr，冒烟脚本会自动跳过它。
+  构建阶段的基础镜像与 v1 同一个 digest，Cython/setuptools 版本钉死。
+- wntr 1.5.0 在 PyPI 上只有 x86_64 Linux 轮子，源码包里的 EPANET 求解器也只带 linux-x64 的 `.so`，arm64 上装不了也跑不了。
+  arm64 本机要测 wntr 题：把 v1、bio-v2、ext-v3 都用 `docker build --platform linux/amd64` 建一遍，
+  再用 `ALE_RUN_DOCKER_PLATFORM=linux/amd64` 跑（模拟，慢）；或在 x86_64 机器上测。
+- 冒烟：WITH_WNTR=1 时缺 wntr 会让构建失败；WITH_WNTR=0 时镜像里出现 wntr 也会失败，两种 tag 不会混。
+  pyhmmer 冒烟真跑一次 build_msa + hmmsearch。
 - **没装 pydssp**：它 import 时无条件 import torch，x86_64 的 PyPI torch 还会拖 CUDA 全家桶（数 GB）。
   二级结构题请改用 Bio.PDB 自己实现判据，或另议 CPU 版 torch 的装法。
