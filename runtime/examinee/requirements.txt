@@ -83,11 +83,3 @@ yourdfpy==0.0.60
 yowasp-runtime==1.96
 yowasp-yosys==0.70.0.0.post1259
 zipp==4.1.1
-
-
-# OpenDSS runtime
-OpenDSSDirect.py==0.9.4
-dss-python==0.15.7
-dss-python-backend==0.14.5
-cffi==2.0.0
-pycparser==2.23

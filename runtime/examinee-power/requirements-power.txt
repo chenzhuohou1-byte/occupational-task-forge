@@ -1,0 +1,8 @@
+# 电力系统镜像 py3.12-power-v4 在 v1（78 个分发）之上新增的分发，全量钉死含传递依赖。
+# 来源：PR #41（徐国梁，X2 配电网开关方案与电压越限复核）原本直接改 v1 的 requirements.txt，
+#   改 v1 不换 tag 会让 v1 下的旧测量口径失效，所以挪成叠加层。改这张表就要升镜像 tag。
+OpenDSSDirect.py==0.9.4
+dss-python==0.15.7
+dss-python-backend==0.14.5
+cffi==2.0.0
+pycparser==2.23
