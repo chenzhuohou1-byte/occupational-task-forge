@@ -1,0 +1,18 @@
+# bench-astro:v1 考生镜像 Python 包，服务于天文与天体物理方向的可执行范式题
+# （H7b 光变曲线周期提取、H8b 坐标转换与可观测窗口、H9b 星系多版本测光一致性）。
+#
+# 版本钉死依据：原镜像构建于 2026-10-26，build 命令未钉版本号（pip install numpy astropy scipy，
+# 当时从阿里云镜像拉的最新版），现用 `docker exec bench-astro:v1 pip freeze` 读出实际装上的版本，
+# 回填成这张表，使重建结果与原镜像一致。后续改这张表（加包/换版本）就要换镜像 tag（v2、v3…），
+# 旧测量与新测量不可比、不回灌（与 ale-examinee 的口径一致，见 docs/考生沙箱-docker.md）。
+#
+# astropy-iers-data 必须与 astropy 一起钉死：H8b 用 astropy.coordinates/time 做地球自转参数
+# （IERS 表）相关的坐标转换，考生容器断网运行，astropy 只能用这个包自带的数据；
+# 数据版本不同，转换结果可能在小数位上变化，而本任务判分容差是 1e-5，足以因此判错。
+numpy==2.5.4
+scipy==1.18.1
+astropy==8.0.2
+astropy-iers-data==0.2026.10.19.0.52.1
+pyerfa==2.0.1.5
+PyYAML==6.0.3
+packaging==26.3
