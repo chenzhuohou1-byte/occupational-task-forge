@@ -138,3 +138,18 @@ docker build -t bench-astro:v1 runtime/bench-astro
   小数位上变化，足以让 1e-5/1e-4 容差的判分翻车。
 - 同样遵守"tag 就是测量口径"：改 `runtime/bench-astro/requirements.txt` 或 Dockerfile 就要换
   tag（v2…），旧测量不回灌。
+
+## 8. 电力系统镜像 `ale-examinee:py3.12-power-v4`（2026-11-04）
+
+给配电网潮流题（X2 配电网开关方案与电压越限复核）用。**叠在 v1 上**，v1 的分发一个版本都不动，只新增
+（`runtime/examinee-power/requirements-power.txt`，全量钉死）：OpenDSSDirect.py 0.9.4、dss-python 0.15.7、
+dss-python-backend 0.14.5（DSS C-API）、cffi 2.0.0、pycparser 2.23。
+
+```bash
+docker build -t ale-examinee:py3.12-power-v4 runtime/examinee-power    # 先有 v1
+export ALE_RUN_SANDBOX=docker ALE_RUN_DOCKER_IMAGE=ale-examinee:py3.12-power-v4
+```
+
+- 测量记录的 runtime 标签是 `docker-py3.12-power-v4`。arm64 / x86_64 都有轮子，两边内容相同。
+- 不叠在 ext-v3 上：ext-v3 的 wntr 在 arm64 上装不了。同一道题要同时用 OpenDSS 和 ext-v3 的包时再另议。
+- 冒烟真解一次三相电路，未收敛构建失败。
