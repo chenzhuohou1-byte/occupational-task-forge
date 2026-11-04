@@ -138,3 +138,29 @@ docker build -t bench-astro:v1 runtime/bench-astro
   小数位上变化，足以让 1e-5/1e-4 容差的判分翻车。
 - 同样遵守"tag 就是测量口径"：改 `runtime/bench-astro/requirements.txt` 或 Dockerfile 就要换
   tag（v2…），旧测量不回灌。
+
+## 8. bench-medical:v1（医疗/心理/社科/量化方向专用镜像）
+
+12 道可执行与数值题在用：H3 PhysioNet ECG、H6/H7/H8（医疗健康），H2/H4/H5（实验心理与
+神经科学），H9/H10（经济与定量社会科学），H1b/H2b/H3b（量化金融）。依赖 pandas/numpy/
+scipy/scikit-learn/statsmodels/matplotlib/openpyxl/pyarrow 这一组数据分析栈，单独登记为
+`bench-medical:v1`：
+
+```bash
+cd ~/occupational-task-forge
+docker build -t bench-medical:v1 runtime/bench-medical
+```
+
+- **Python 是 3.11.15**（基础镜像 `python:3.11-slim`，digest 已钉），与 `ale-examinee` 系列的
+  3.12 刻意不同：这 12 道题的测量是在 pandas 2.2.2 / numpy 1.26.4 / scipy 1.13.1 这一组
+  3.11 轮子上做的，换 3.12 要重解依赖并换 tag、全部重测。
+- 版本钉死依据：原镜像构建于 2026-08-03、build 时未钉版本号，现用
+  `docker run --rm bench-medical:v1 pip freeze` 回填实际装上的 29 个包到
+  `runtime/bench-medical/requirements.txt`，使重建结果与原镜像一致。
+- `pytest` / `pytest-timeout` 一并保留：部分题的判分侧在容器内跑用例，缺了起不来。
+- 构建期冒烟（`smoke.py`）不只 import，还真跑一遍 pandas 分组聚合 → statsmodels OLS →
+  scipy 检验 → sklearn 拟合 → openpyxl 往返 → pyarrow 往返 → matplotlib(Agg) 出图；
+  "装上但用不了"（缺字体、无显示后端、ABI 不配）会在构建期就失败。
+- 同样遵守"tag 就是测量口径"：改 `runtime/bench-medical/requirements.txt` 或 Dockerfile 就要
+  换 tag（v2…），旧测量不回灌。
+
