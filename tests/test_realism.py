@@ -66,6 +66,9 @@ def main():
     reg = FakeTask({"software": ["CellProfiler 4.2.8"],
                     "evaluation": {"engine": {"adapter_args": {"image": "ale-examinee:cellprofiler-4.2.8"}}}}, d)
     check(realism.software_hint(reg)["达标"], "登记镜像自带的软件（CellProfiler）算已装")
+    layered = FakeTask({"software": ["Biopython", "pyhmmer 0.12.3", "SimpleITK", "lifelines", "wntr"]}, d)
+    h = realism.software_hint(layered)
+    check(h["达标"], "叠加镜像（bio-v2、ext-v3）的包表也算进考生环境：%s" % h["未装"])
 
     print("\n%s" % ("全部通过" if not FAILURES else "%d 项失败" % len(FAILURES)))
     return 1 if FAILURES else 0
