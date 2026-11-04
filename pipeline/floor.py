@@ -26,10 +26,18 @@ def _is_number(x):
 
 
 def _perturb_number(v, rng):
-    """把数值改成明显不同的值：乘一个 2~9 的因子再加偏移，保证不等于原值。"""
+    """把数值改成明显不同的值：乘一个 2~9 的因子再加偏移，保证不等于原值。
+
+    注意整数分支的撞车：v=-7 且 f=2 → -14+7 = -7（不动点），v=-1 且 f=8 → -8+7 = -1，
+    会恰好合成回原值（实测：三张销售数量=-7 的发票各白送一格，地板 0.0001）。
+    撞上时补一个固定偏移（+13），不额外消耗随机数、不改变后续合成序列。
+    """
     f = rng.choice([2, 3, 5, 7, 9])
     if isinstance(v, int):
-        return int(v * f) + 7 if v else rng.randint(101, 9999)
+        if v == 0:
+            return rng.randint(101, 9999)
+        out = int(v * f) + 7
+        return out + 13 if out == v else out
     out = round(v * f + 1.37, 2)
     return out if abs(out - v) > 1e-9 else round(v + 13.71, 2)
 
