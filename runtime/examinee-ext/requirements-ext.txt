@@ -1,0 +1,18 @@
+# 扩展镜像 py3.12-ext-v3 在 bio-v2（含 v1 的 78 个、bio 的 48 个分发）之上新增的分发，全量钉死含传递依赖。
+# 生成方式（11-03）：在 bio-v2 的 pip freeze 约束下解析 pyhmmer pyranges pydicom SimpleITK lifelines wntr rasterio，
+#   取不在 bio-v2 里的分发；pip check 通过。改这张表就要升镜像 tag。
+# 不含 pydssp：它 import 时无条件 import torch，x86_64 的 PyPI torch 还要拖 CUDA 全家桶，不值得。
+affine==3.0.1
+autograd-gamma==0.4.2
+autograd==1.9.1
+lifelines==0.30.0
+ncls==0.0.71
+psutil==7.2.2
+pydicom==3.0.2
+pyhmmer==0.12.3
+pyranges==0.1.7
+rasterio==1.5.2
+simpleitk==2.5.7
+sorted-nearest==0.0.42
+tabulate==0.10.0
+wntr==1.5.0

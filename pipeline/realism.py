@@ -9,14 +9,15 @@
   + runtime/software_registry.json（取并集，只答「有没有」，不答「这道题用的那个镜像里有没有」）。可执行范式的题另查 `evaluation.engine.adapter_args.image`
   是否已登记（只在作者本机的镜像，别人跑不了 qc）。
 """
+import glob
 import json
 import os
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# 所有登记过的考生镜像的包表取并集：非可执行题的卡上不写用哪个镜像，提示只回答「登记过的考生环境里有没有」
-REQUIREMENTS = [os.path.join(ROOT, "runtime", "examinee", "requirements.txt"),
-                os.path.join(ROOT, "runtime", "examinee-bio", "requirements-bio.txt")]
+# 所有登记过的考生镜像的包表取并集：非可执行题的卡上不写用哪个镜像，提示只回答「登记过的考生环境里有没有」。
+# 按通配取，新加一层镜像（examinee-ext 等）不用再回来改这里
+REQUIREMENTS = sorted(glob.glob(os.path.join(ROOT, "runtime", "examinee*", "requirements*.txt")))
 REGISTRY = os.path.join(ROOT, "runtime", "software_registry.json")
 
 MIN_INPUT_KB = 100
