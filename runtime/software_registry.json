@@ -27,7 +27,8 @@
     "python:3.11-slim-bookworm": "Docker 官方镜像，只有标准库",
     "ale-examinee:py3.12-bio-v2": "runtime/examinee-bio/Dockerfile（叠在 v1 上，加 requirements-bio.txt 与 samtools 等命令行工具）",
     "ale-examinee:py3.12-ext-v3": "runtime/examinee-ext/Dockerfile（x86_64；叠在 bio-v2 上，加 requirements-ext.txt：pyranges/pyhmmer/pydicom/SimpleITK/lifelines/rasterio/wntr）",
-    "ale-examinee:py3.12-ext-v3-nowntr": "runtime/examinee-ext/Dockerfile --build-arg WITH_WNTR=0（arm64 可建；同 ext-v3 但不含 wntr）"
+    "ale-examinee:py3.12-ext-v3-nowntr": "runtime/examinee-ext/Dockerfile --build-arg WITH_WNTR=0（arm64 可建；同 ext-v3 但不含 wntr）",
+    "bench-astro:v1": "runtime/bench-astro/Dockerfile（天文可执行题 H7b/H8b/H9b；python:3.12-slim + numpy/scipy/astropy，astropy-iers-data 钉死）"
   },
   "imageSoftware": {
     "ale-examinee:cellprofiler-4.2.8": [
@@ -43,6 +44,11 @@
       "htslib",
       "bwa",
       "minimap2"
+    ],
+    "bench-astro:v1": [
+      "astropy",
+      "pyerfa",
+      "astropy-iers-data"
     ]
   }
 }

@@ -117,3 +117,24 @@ export ALE_RUN_SANDBOX=docker ALE_RUN_DOCKER_IMAGE=ale-examinee:py3.12-ext-v3   
   pyhmmer 冒烟真跑一次 build_msa + hmmsearch。
 - **没装 pydssp**：它 import 时无条件 import torch，x86_64 的 PyPI torch 还会拖 CUDA 全家桶（数 GB）。
   二级结构题请改用 Bio.PDB 自己实现判据，或另议 CPU 版 torch 的装法。
+
+## 7. bench-astro:v1（天文方向专用镜像）
+
+天文与天体物理方向的可执行范式题（H7b 光变曲线周期提取、H8b 坐标转换与可观测窗口、
+H9b 星系多版本测光一致性）在 `ale-examinee:py3.12-sci-v1` 之外额外依赖 `numpy`/`astropy`/
+`scipy`，单独登记为 `bench-astro:v1`，不与通用考生镜像合并（避免给所有题都装天文方向
+才需要的重依赖）。构建方式与 `runtime/examinee/` 同构：
+
+```bash
+cd ~/occupational-task-forge
+docker build -t bench-astro:v1 runtime/bench-astro
+```
+
+- 版本钉死依据：原镜像构建于 2026-10-26，`pip install numpy astropy scipy` 时未钉版本号，
+  现用 `pip freeze` 回填实际装上的版本到 `runtime/bench-astro/requirements.txt`，使重建结果
+  与原镜像一致。
+- `astropy-iers-data` 与 `astropy` 一起钉死：H8b 用到的坐标/时间转换依赖地球自转参数
+  （IERS 表），考生容器断网运行，只能用这个包自带的数据；数据版本不同，转换结果可能在
+  小数位上变化，足以让 1e-5/1e-4 容差的判分翻车。
+- 同样遵守"tag 就是测量口径"：改 `runtime/bench-astro/requirements.txt` 或 Dockerfile 就要换
+  tag（v2…），旧测量不回灌。

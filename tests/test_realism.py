@@ -60,7 +60,7 @@ def main():
     h = realism.software_hint(bad)
     check(not h["达标"] and h["未装"] == ["QGIS", "tshark", "stim"], "QGIS/tshark/stim 不在考生环境 → 报出来")
     check(realism.software_hint(FakeTask({}, d))["达标"], "没写 software → 不报")
-    img = FakeTask({"software": [], "evaluation": {"engine": {"adapter_args": {"image": "bench-astro:v1"}}}}, d)
+    img = FakeTask({"software": [], "evaluation": {"engine": {"adapter_args": {"image": "someone-local:v0"}}}}, d)
     h = realism.software_hint(img)
     check(not h["达标"] and h.get("镜像未登记"), "可执行题用了未登记镜像（只在作者本机）→ 报出来")
     reg = FakeTask({"software": ["CellProfiler 4.2.8"],
