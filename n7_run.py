@@ -32,7 +32,7 @@ import os
 import sys
 import time
 
-from pipeline import agentsolve, qc, tasks, llm
+from pipeline import agentsolve, qc, tasks, llm, vision
 from pipeline.config import PipelineConfig
 from pipeline.cost import CostTracker
 
@@ -538,11 +538,14 @@ def main():
                        "reasoningEffort": os.environ.get("ALE_LLM_REASONING_EFFORT", "") or None,
                        # 附件单文件读取上限也是「换了就不可比」的一项（§6.4）：材料被截断过
                        # 和材料完整，对考生是两道题。不记下来，两条测量就没法对照。
-                       "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools in ("python", "engine"))
+                       "inputLimit": agentsolve.PAGE_CHARS if (mode == "agent" and tools in ("python", "engine", "vision"))
                        else int(os.environ.get("ALE_N7_INPUT_LIMIT", "8000")),
                         "wallClockMin": None,
                         # 考生 run_python 的环境（解释器+可调软件）。None = 产线默认解释器、无外部软件
-                        "runtime": agentsolve.runtime()[3]},
+                        "runtime": agentsolve.runtime()[3],
+                        # 看图考法的两个口径：显示长边上限、上下文保留张数（换了就不可比）
+                        **({"vision": {"maxSide": vision.MAX_SIDE, "keepImages": vision.KEEP}}
+                           if (mode == "agent" and tools == "vision") else {})},
             "scorerVersion": scorer_version,
             "nRuns": n_ok,
             "fullPassRate": round(sum(1 for r in runs if r["passed"]) / n_ok, 4) if n_ok else None,

@@ -139,6 +139,25 @@ def test_tier_rejects():
     check((ok, t, src) == (True, "L4", "推定") and "前沿档" in str(d.get("待补")),
           "前沿档是旧考法 → L4 但降推定")
 
+    # 看图考法 agent-file-vision（2026-11-05）
+    ok, t, src, _ = tier_of([md(CHEAP, 0.0, toolset="agent-file-vision"),
+                             md(FRONT, 0.2, n=10, toolset="agent-file-vision")])
+    check((ok, t, src) == (True, "L3", "实测"), "两档都是看图考法 → 与 python 档同等定级（L3 实测）")
+    vis = {"evaluation": {"scorerVersion": "1.0", "visionRequired": True}}
+    ok, d = qc.difficulty_tier(FakeTask({**vis, "measuredDifficulty": [
+        md(CHEAP, 0.0), md(FRONT, 0.0, n=10)]}))
+    check(ok and d.get("tier") == "L4" and d.get("级别来源") == "推定" and "看图" in str(d.get("待补")),
+          "visionRequired 的题只有 python 档测量 → L4 降推定、提示按看图考法重测")
+    ok, d = qc.difficulty_tier(FakeTask({**vis, "measuredDifficulty": [
+        md(CHEAP, 0.0), md(FRONT, 0.0, n=10, at="2026-11-10"),
+        md(FRONT, 0.3, n=10, toolset="agent-file-vision", at="2026-11-05")]}))
+    check(ok and d.get("tier") == "L3" and d.get("级别来源") == "实测"
+          and d["前沿档"].get("toolset") == "agent-file-vision",
+          "visionRequired 的题看图档与 python 档并存 → 优先看图档（哪怕 python 档更新）")
+    ok, d = qc.difficulty_tier(FakeTask({**vis, "measuredDifficulty": [md(CHEAP, 1.0)]}))
+    check(ok and d.get("tier") == "L1" and d.get("级别来源") == "实测",
+          "visionRequired 的题便宜档不看图都满分 → L1 照给实测（看图只会更容易）")
+
 
 def test_purpose():
     print("§7 用途：训练集放宽 / 测试集严格 / 漏填按严的来")
