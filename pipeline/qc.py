@@ -606,9 +606,13 @@ _MD_REQUIRED = ("model", "toolset", "budget", "scorerVersion", "nRuns")
 # 旧考法测量仍可定级但只给推定级 —— 它把「心算出错」也算成难度，偏硬。
 AGENT_TOOLSET = "agent-file-python"
 LEGACY_AGENT_TOOLSET = "agent-file-tools"
+# 看图考法（2026-11-05）：agent-file-python + view_image。与 python 档同属现行考法、一起参与定级；
+# 卡上 evaluation.visionRequired=true 的题只认它为实测（不能看图的测量把 harness 缺口算成难度）。
+VISION_TOOLSET = "agent-file-vision"
+CURRENT_TOOLSETS = (AGENT_TOOLSET, VISION_TOOLSET)
 
 
-def _latest_agent_run(md, model, cur_ver):
+def _latest_agent_run(md, model, cur_ver, prefer=None):
     """挑出「当前判分器下、该基准模型的最近一次 agent 档测量」，连同挑不出来的原因。
 
     三条规矩沿用契约 §6.2/§6.3，一个字没放松（放开的只有难度本身，见 difficulty_tier）：
@@ -619,10 +623,12 @@ def _latest_agent_run(md, model, cur_ver):
     """
     hit = [e for e in md if str(e.get("model", "")).lower() == model
            and str(e.get("scorerVersion", "")).strip() == cur_ver
-           and str(e.get("toolset", "")) in (AGENT_TOOLSET, LEGACY_AGENT_TOOLSET)
+           and str(e.get("toolset", "")) in CURRENT_TOOLSETS + (LEGACY_AGENT_TOOLSET,)
            and not [k for k in _MD_REQUIRED if not e.get(k)]]
     if hit:
-        return sorted(hit, key=lambda x: (str(x.get("toolset")) == AGENT_TOOLSET,
+        # 排序键：指定考法优先（visionRequired 的题优先看图档）> 现行考法 > 旧考法；同级取最近
+        return sorted(hit, key=lambda x: (prefer is not None and str(x.get("toolset")) == prefer,
+                                          str(x.get("toolset")) in CURRENT_TOOLSETS,
                                           str(x.get("measuredAt", ""))))[-1], ""
     same_model = [e for e in md if str(e.get("model", "")).lower() == model]
     cur_any = [e for e in same_model
@@ -634,6 +640,16 @@ def _latest_agent_run(md, model, cur_ver):
         return None, ("判分器已改版(当前 %s)，旧测量 scorerVersion=%s 不再算数，需重测"
                       % (cur_ver, [e.get("scorerVersion") for e in same_model]))
     return None, "未测（该基准模型没有任何测量条目）"
+
+
+def _vision_hedge(need_vision, entries):
+    """visionRequired 的题：定级用的测量若不是看图考法，失分里混着「看不见图」这一 harness 缺口
+    （契约 §6.3 校准附注 4），只给推定级、提示按 agent-file-vision 重测。"""
+    if not need_vision:
+        return []
+    bad = [n for n, e in entries if e and str(e.get("toolset")) != VISION_TOOLSET]
+    return (["%s 不是看图考法（任务卡 visionRequired=true），失分可能来自看不见图，需按 %s 重测"
+             % ("/".join(bad), VISION_TOOLSET)] if bad else [])
 
 
 def _md_row(e):
@@ -668,8 +684,10 @@ def difficulty_tier(task):
     if not cur_ver:
         return False, {**base, "说明": "evaluation.scorerVersion 未声明：无法判断难度数字"
                                        "是不是当前判分器测的（契约 §6.2）"}
-    cheap, cheap_why = _latest_agent_run(md, CHEAP_MODEL, cur_ver)
-    front, front_why = _latest_agent_run(md, FRONTIER_MODEL, cur_ver)
+    need_vision = bool((task.card.get("evaluation") or {}).get("visionRequired"))
+    prefer = VISION_TOOLSET if need_vision else None
+    cheap, cheap_why = _latest_agent_run(md, CHEAP_MODEL, cur_ver, prefer)
+    front, front_why = _latest_agent_run(md, FRONTIER_MODEL, cur_ver, prefer)
     base = {**base, "判分器版本": cur_ver,
             "便宜档": _md_row(cheap) if cheap else {"缺": cheap_why},
             "前沿档": _md_row(front) if front else {"缺": front_why}}
@@ -696,6 +714,7 @@ def difficulty_tier(task):
             hedge.append("前沿档 nRuns=%d < %d，切不开 10%%/30%% 两刀，需补跑" % (fn, FRONT_MIN_RUNS))
         if str(front.get("toolset")) == LEGACY_AGENT_TOOLSET:
             hedge.append("前沿档是旧考法 agent-file-tools（不能跑代码，偏硬），需按 %s 重测" % AGENT_TOOLSET)
+        hedge += _vision_hedge(need_vision, [("前沿档", front)])
         src = "推定" if hedge else "实测"
         return True, {**base, "tier": tier, "级别来源": src, "可判定": True,
                       "说明": note, **({"待补": hedge} if hedge else {})}
@@ -725,6 +744,8 @@ def difficulty_tier(task):
     if legacy:
         hedge.append("%s 是旧考法 agent-file-tools（不能跑代码，偏硬），需按 %s 重测"
                      % ("/".join(legacy), AGENT_TOOLSET))
+    # L1 只看便宜档：便宜档不看图都满分了，看图只会更容易，结论站得住，不提示
+    hedge += _vision_hedge(need_vision, [("前沿档", front)] if tier != "L1" else [])
     src = "推定" if hedge else "实测"
     return True, {**base, "tier": tier, "级别来源": src, "可判定": True,
                   "说明": note, **({"待补": hedge} if hedge else {})}

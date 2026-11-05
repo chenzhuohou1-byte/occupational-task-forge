@@ -15,9 +15,12 @@
   python（默认，toolset=agent-file-python）：上面四个 + run_python，read_file 可按 offset 分页
   file  （旧考法，toolset=agent-file-tools）：只有上面四个，保留只为与旧测量对照
 
+  vision（toolset=agent-file-vision）：python 全部动作 + view_image（看图，见 pipeline/vision.py）。
+    给读图/渲染核对类题用；它与 python 档同为现行考法、都参与定级（契约 §6.2）。
+
 还有一档 engine（toolset=agent-file-engine，判分契约 §9.5）：在 python 基础上多一个
 engine_selftest 动作，让 agent 把自己造的可执行产物丢到真实引擎上跑自己写的场景（像真工程师
-那样部署自测）。**它与另两档不可比、不参与难度定级**（qc 只认 agent-file-python/-tools）——
+那样部署自测）。**它与另几档不可比、不参与难度定级**（qc 只认 agent-file-python/-vision/-tools）——
 拿到引擎反馈再做的题，难度和盲测是两回事。隔离与红线见 pipeline.executable.selftest。
 
 为什么默认要能跑代码：ALE 的 agent 在沙箱里有完整 shell（vm_mcp_server.run_command），
@@ -36,10 +39,10 @@ import subprocess
 import sys
 import tempfile
 
-from . import harness, qc
+from . import harness, qc, vision
 
 TOOLSETS = {"python": "agent-file-python", "file": "agent-file-tools",
-            "engine": "agent-file-engine"}
+            "engine": "agent-file-engine", "vision": "agent-file-vision"}
 # read_file 每页字符数。默认沿用 ALE_N7_INPUT_LIMIT（n7_run 记进 budget.inputLimit），
 # 保证 10-15 起的 agent-file-python 测量口径不变；ALE_N7_PAGE_CHARS 可单独覆盖。
 PAGE_CHARS = int(os.environ.get("ALE_N7_PAGE_CHARS") or os.environ.get("ALE_N7_INPUT_LIMIT") or "8000")
@@ -109,8 +112,29 @@ PROTOCOL_ENGINE = """你在一个沙箱里完成任务。只能用下面六个�
 最多 %d 步，步数用完即交卷。"""
 
 
+# vision 档：python 全部动作 + view_image
+PROTOCOL_VISION = """你在一个沙箱里完成任务。只能用下面六个动作，**每轮只回一个 JSON 对象、不要任何其它文字**：
+{"action":"list_files"}
+{"action":"read_file","path":"相对 input/ 的路径","offset":0}
+{"action":"write_file","path":"相对 output/ 的路径","content":"该文件的完整文本内容"}
+{"action":"run_python","code":"完整的 Python 3 脚本"}
+{"action":"view_image","path":"input/… 或 output/… 或 _scratch/… 下的图片","crop":[x,y,w,h]}
+{"action":"finish"}
+规则：
+- 工作目录下有 input/（只读，附件原文件，含 xlsx/docx 等二进制）与 output/（唯一能写的交付目录）。
+- read_file 返回文本化后的附件；长文件分页，按提示的 offset 继续读。
+- run_python 在工作目录里执行脚本，返回退出码与 stdout/stderr（过长会截断，只 print 你要看的）。
+  无网络；每次运行独立、不保留变量；可用标准库，pandas/openpyxl 等视环境而定，import 失败就退回标准库。
+  脚本可以直接把交付文件写进 output/，临时文件（如画了轮廓的叠加图、渲染图）写进 _scratch/。
+- view_image 把一张图片给你看（png/jpg/tif 等；SVG 先渲染成 PNG）。crop 可省略，单位是原图像素、左上为原点；
+  显示时长边最多 %d 像素，大图看细节请裁剪。上下文里只保留最近 %d 张图，更早的会被移出。
+- 交付文件必须严格按「交付要求」的文件名与格式；写完全部交付文件后再 finish。
+最多 %%d 步，步数用完即交卷。""" % (vision.MAX_SIDE, vision.KEEP)
+
+
 def _protocol(tools):
-    return {"file": PROTOCOL, "python": PROTOCOL_PY, "engine": PROTOCOL_ENGINE}[tools]
+    return {"file": PROTOCOL, "python": PROTOCOL_PY, "engine": PROTOCOL_ENGINE,
+            "vision": PROTOCOL_VISION}[tools]
 
 
 
@@ -319,12 +343,13 @@ def _out_files(out_dir):
     return sorted(res)
 
 
-def _listing(inputs, paged=True):
+def _listing(inputs, paged=True, images=False):
     """清单带字符数与页数——模型据此估步数预算，不然它不知道一份 4 万字符的表要读 7 次。
-    旧考法（不分页）只给字符数，保持对照基线不变。"""
+    旧考法（不分页）只给字符数，保持对照基线不变。vision 档把图片标出来（文本化的图片是乱码，别去 read_file）。"""
     if not paged:
         return "\n".join("  %s  (%d 字符)" % (k, len(v)) for k, v in inputs.items())
     return "\n".join(
+        ("  %s  (图片，用 view_image 看，或 run_python 解析)" % k) if images and vision.is_image(k) else
         "  %s  (%d 字符，需 read_file %d 次)" % (k, len(v), max(1, -(-len(v) // PAGE_CHARS)))
         for k, v in inputs.items())
 
@@ -406,8 +431,11 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
     """
     if tools not in TOOLSETS:
         raise ValueError("tools 只认 %s，给的是 %r" % (list(TOOLSETS), tools))
-    py = tools in ("python", "engine")   # 这两档都带 run_python 与分页读
+    py = tools in ("python", "engine", "vision")   # 这三档都带 run_python 与分页读
     eng = tools == "engine"
+    vis = tools == "vision"
+    if vis and not vision.available():
+        raise RuntimeError("vision 工具集需要产线解释器装 Pillow（pip install pillow）")
     wd = tempfile.mkdtemp(prefix="ale_n7agent_")
     harness.setup_env(task, wd)
     selftest = None
@@ -433,18 +461,20 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
         {"role": "user", "content": "\n".join([
             task.card.get("prompt", ""), "", "## 交付要求",
             json.dumps(task.card.get("交付要求", {}), ensure_ascii=False, indent=2),
-            "", "## input/ 文件清单（用 read_file 按需读）", _listing(inputs, py),
+            "", "## input/ 文件清单（用 read_file 按需读）", _listing(inputs, py, vis),
             "", "现在开始，回一个动作 JSON。"])},
     ]
 
     trace, written, bad_steps, valid, py_runs, eng_tests = [], 0, 0, 0, 0, 0
-    markup_steps = 0
+    markup_steps, views, view_bytes = 0, 0, 0
 
     def _info(**kw):
         return {"步数": len(trace), "协议噪声步": bad_steps, "工具标记步": markup_steps, **kw}
 
     try:
         for step in range(max_steps):
+            if vis:
+                vision.prune(msgs)
             res = llm.chat(msgs)
             if cost:
                 cost.add("N7-agent", res)
@@ -463,6 +493,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                           判读=rec["判读"]))
             msgs.append({"role": "assistant", "content": res.text})
             act = _first_action(res.text)
+            img = None   # view_image 这一步要交给模型看的 (字节, mime)
             markup = bool(TOOL_MARKUP_RE.search(res.text))
             markup_steps += markup
             if not act:
@@ -472,12 +503,12 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                 valid += 1
                 kind = act.get("action")
                 if kind == "list_files":
-                    obs = "input/ 文件清单：\n" + _listing(inputs, py)
+                    obs = "input/ 文件清单：\n" + _listing(inputs, py, vis)
                 elif kind == "read_file":
                     p = str(act.get("path", "")).lstrip("/")
                     p = p[len("input/"):] if p.startswith("input/") else p
                     if p not in inputs:
-                        obs = "没有这个文件。清单：\n" + _listing(inputs, py)
+                        obs = "没有这个文件。清单：\n" + _listing(inputs, py, vis)
                     elif py:
                         obs = _page(p, inputs[p], act.get("offset", 0))
                     else:
@@ -489,6 +520,26 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                     else:
                         py_runs += 1
                         obs, _changed = run_python(wd, code, "step%02d" % (step + 1))
+                elif kind == "view_image" and vis:
+                    full, why = vision.resolve(wd, act.get("path"))
+                    if not full:
+                        obs = why
+                    else:
+                        try:
+                            data, mime, note = vision.load(full, act.get("crop"))
+                        except ValueError as e:
+                            obs = "view_image 失败：%s" % e
+                        else:
+                            views += 1
+                            view_bytes += len(data)
+                            img = (data, mime)
+                            obs = "view_image %s：%s" % (act.get("path"), note)
+                            if trace_dir:   # 看过的图原样留证，复盘时才知道它到底看到了什么
+                                vd = os.path.join(trace_dir, "views")
+                                os.makedirs(vd, exist_ok=True)
+                                with open(os.path.join(vd, "step%02d.%s" % (
+                                        step + 1, "png" if mime == "image/png" else "jpg")), "wb") as f:
+                                    f.write(data)
                 elif kind == "engine_selftest" and eng:
                     eng_tests += 1
                     result = selftest(act.get("scenarios"))
@@ -514,22 +565,28 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                         allowed += "run_python/"
                     if eng:
                         allowed += "engine_selftest/"
+                    if vis:
+                        allowed += "view_image/"
                     obs = "不认识的 action=%r，只许 %sfinish。" % (kind, allowed)
             trace.append({"step": step + 1, "action": (act or {}).get("action", "<解析失败>"),
                           "path": (act or {}).get("path"),
                           **({"工具标记": True} if markup else {}),
                           # 多页读取的轨迹不记 offset 事后没法复盘它到底读了哪一段
                           **({"offset": (act or {}).get("offset", 0)}
-                             if (act or {}).get("action") == "read_file" else {})})
+                             if (act or {}).get("action") == "read_file" else {}),
+                          **({"crop": (act or {}).get("crop")}
+                             if (act or {}).get("action") == "view_image" else {})})
             left = max_steps - step - 1
-            msgs.append({"role": "user", "content": "%s\n[还剩 %d 步；步数用完即交卷，"
-                         "务必留足步数把交付文件写出来]" % (obs, left)})
+            text = "%s\n[还剩 %d 步；步数用完即交卷，务必留足步数把交付文件写出来]" % (obs, left)
+            msgs.append({"role": "user",
+                         "content": vision.content_blocks(text, *img) if img else text})
     finally:
         # 不管正常结束还是抛故障都落盘：最该复盘的恰恰是出故障那几次
-        qc._save_trace(trace_dir, transcript=msgs, actions=trace,
+        qc._save_trace(trace_dir, transcript=vision.sanitize(msgs), actions=trace,
                        meta={"max_steps": max_steps, "toolset": TOOLSETS[tools], "有效动作": valid,
                              "协议噪声步": bad_steps, "工具标记步": markup_steps, "write次数": written,
                              "run_python次数": py_runs, "engine_selftest次数": eng_tests,
+                             "view_image次数": views, "图片字节": view_bytes,
                              "work_dir": wd})
         # 不可信 engine 自测起过的一次性沙箱必须销毁，绝不残留跑着的引擎
         if selftest is not None and hasattr(selftest, "close"):
@@ -556,6 +613,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                   "步数": len(trace), "write次数": written, "协议噪声步": bad_steps,
                   "工具标记步": markup_steps,
                   "run_python次数": py_runs, "engine_selftest次数": eng_tests,
+                  "view_image次数": views,
                   "trace": trace, "trace_dir": trace_dir}
 
 
@@ -711,7 +769,88 @@ def _selftest():
         print("agentsolve 自测⑤engine 档对非可执行任务拒绝 OK")
     else:
         raise AssertionError("engine 工具集居然在数值型任务上放行了")
+    _vision_selftest(t)
     return True
+
+
+class _CapturingClient(_ScriptedClient):
+    """记下每一步发给模型的 messages 快照（看图档要核对图片块到底进没进请求）。"""
+
+    def __init__(self, script):
+        super().__init__(script)
+        self.sent = []
+
+    def chat(self, messages, **kw):
+        self.sent.append(json.loads(json.dumps(messages)))
+        return super().chat(messages, **kw)
+
+
+def _vision_selftest(t):
+    """看图档（toolset=agent-file-vision）离线自测：不触网。
+    ① run_python 在 _scratch/ 画图 → view_image（带 crop）→ 下一步请求里真有 image_url 块、轨迹记了 crop；
+    ② 路径逃逸（../、绝对路径、不在三个目录里）一律拒、不发图；③ 只留最近 KEEP 张图；
+    ④ 落盘对话里没有 base64；⑤ python 档不认 view_image。"""
+    if not vision.available():
+        print("agentsolve 自测⑧看图档：产线解释器没装 Pillow，跳过")
+        return
+    if not shutil.which("sandbox-exec"):
+        os.environ["ALE_RUN_PYTHON_UNSANDBOXED"] = "1"
+    # 沙箱里的解释器不一定有 Pillow：用标准库手写一张 40x30 的 PNG（左红右蓝）
+    draw = "\n".join([
+        "import struct, zlib",
+        "w, h = 40, 30",
+        "rows = b''.join(b'\\x00' + b''.join(bytes((255,0,0)) if x < 20 else bytes((0,0,255)) for x in range(w)) for _ in range(h))",
+        "def chunk(t, d): return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)",
+        "png = b'\\x89PNG\\r\\n\\x1a\\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b'')",
+        "open('_scratch/probe.png', 'wb').write(png); print('drawn')"])
+    script = [json.dumps({"action": "run_python", "code": draw}),
+              json.dumps({"action": "view_image", "path": "_scratch/probe.png", "crop": [20, 0, 20, 30]}),
+              json.dumps({"action": "view_image", "path": "../../etc/passwd"}),
+              json.dumps({"action": "view_image", "path": "/etc/hosts"}),
+              json.dumps({"action": "view_image", "path": "input/采购清单.csv"})]
+    script += [json.dumps({"action": "view_image", "path": "_scratch/probe.png"})] * 4
+    script += [json.dumps({"action": "finish"})]
+    td = tempfile.mkdtemp(prefix="ale_vis_")
+    cl = _CapturingClient(script)
+    try:
+        ok, r = agent_solve(t, cl, max_steps=len(script) + 1, trace_dir=td, tools="vision")
+        assert r["toolset"] == "agent-file-vision", r["toolset"]
+        assert r["view_image次数"] == 5, "成功看图次数应为 5（1 次裁剪 + 4 次整图）：%s" % r["view_image次数"]
+
+        def blocks(msgs):
+            return [b for m in msgs if isinstance(m.get("content"), list)
+                    for b in m["content"] if b.get("type") == "image_url"]
+        after_crop = cl.sent[2]   # 第 3 次请求＝看完裁剪图之后
+        assert len(blocks(after_crop)) == 1 and blocks(after_crop)[0]["image_url"]["url"].startswith(
+            "data:image/png;base64,"), "裁剪图没进请求"
+        assert "区域 [x=20, y=0, w=20, h=30]" in json.dumps(after_crop[-1], ensure_ascii=False), after_crop[-1]
+        crop_step = [s for s in r["trace"] if s["action"] == "view_image"][0]
+        assert crop_step.get("crop") == [20, 0, 20, 30], crop_step
+        for i in (3, 4, 5):   # 三次非法路径：请求里图片数不增加，观察文本说明原因
+            assert len(blocks(cl.sent[i])) == 1, "非法路径居然发了图（第 %d 次请求）" % (i + 1)
+        last_obs = [json.dumps(m, ensure_ascii=False) for m in cl.sent[5][-3:]]
+        assert any("只能看" in x for x in last_obs), last_obs
+        assert len(blocks(cl.sent[-1])) == vision.KEEP, "上下文应只留最近 %d 张图，实际 %d" % (
+            vision.KEEP, len(blocks(cl.sent[-1])))
+        tr = open(os.path.join(td, "transcript.json"), encoding="utf-8").read()
+        assert "base64," not in tr and "<image sha256:" in tr, "落盘对话里还有 base64 或没留摘要"
+        assert len(os.listdir(os.path.join(td, "views"))) == 5, "看过的图没全留证"
+        # 解码校验：裁剪后应全是蓝色（右半边）
+        import base64 as b64
+        from PIL import Image
+        import io as _io
+        url = blocks(after_crop)[0]["image_url"]["url"]
+        px = Image.open(_io.BytesIO(b64.b64decode(url.split(",", 1)[1]))).convert("RGB").getpixel((5, 5))
+        assert px == (0, 0, 255), "crop 区域不对，取到的像素是 %s" % (px,)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+    print("agentsolve 自测⑧看图档 OK（裁剪/越界拒绝/只留 %d 张/轨迹去 base64/留证）" % vision.KEEP)
+
+    ok, r = agent_solve(t, _ScriptedClient([
+        json.dumps({"action": "view_image", "path": "input/采购清单.csv"}),
+        json.dumps({"action": "finish"})]), max_steps=3)
+    assert r.get("view_image次数") == 0 and r["toolset"] == "agent-file-python", r
+    print("agentsolve 自测⑨python 档不认 view_image OK")
 
 
 def _fault_selftest(t):
