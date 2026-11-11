@@ -12,7 +12,7 @@ prompt 存在三处副本（设计稿 / prompt_final.txt / CSV 单元格），�
 import csv
 import os
 
-CSV_DEFAULT = os.path.expanduser("~/Desktop/KW数据产线/KA类数据构造存档.csv")
+CSV_DEFAULT = os.path.expanduser("~/Desktop/ALE数据产线/KA类数据构造存档.csv")
 KEY_COL = 5          # 「任务类型」列下标，作为行的唯一键
 PROMPT_COL = 3       # 「任务 Prompt」列下标
 ENC = "utf-8-sig"    # Excel 打得开中文，必须带 BOM

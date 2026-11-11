@@ -8,7 +8,7 @@
 自动置位，实测 16/16。
 
 用法：
-    python3 kw_pack.py ~/Desktop/KW数据产线/01_计量校准_超差追溯/计量与检测_20260914
+    python3 kw_pack.py ~/Desktop/ALE数据产线/01_计量校准_超差追溯/计量与检测_20260914
     python3 kw_pack.py <目录> <输出.zip>
 """
 import os
