@@ -1044,6 +1044,28 @@ def _gold_numbers(task, lo=1000.0):
     return out, skipped
 
 
+# 「数」可能开始的每个位置（前一个字符不是数字或小数点），用零宽前瞻取重叠匹配：
+# 指数里的 "e-1500"、"9E1.2e+06" 里的 "1.2e+06" 在逐个正则的口径下都算命中，起点不能被前一个数吞掉。
+_NUM_START_RE = re.compile(r"(?<![\d.])(?=(-?\d+)(\.\d+)?(e[+-]\d+)?)")
+
+
+def _num_forms(text):
+    """text 里所有能被 `(?<![\\d.])<s>(?![\\d])` 命中的 s 的集合（s 是 "%g" 写法）。
+
+    逐个 gold 用正则扫全文是 O(gold×文本)，大附件题（几万个 gold × 几 MB 文本）单题要一个多小时；
+    这里扫一遍文本、收齐候选写法，再按集合查，命中口径与逐个正则一致：
+    整数部分后面跟的是小数点也算命中（"1234" 命中 "1234.5"），"-1500" 里的 "1500" 也算。
+    """
+    forms = set()
+    for m in _NUM_START_RE.finditer(text):
+        ip, fp, ep = m.group(1), m.group(2) or "", m.group(3) or ""
+        forms.add(ip)
+        forms.add(ip + fp)
+        if ep:
+            forms.add(ip + fp + ep)
+    return forms
+
+
 def _check_no_answer_leak(task):
     """题面不许印标准答案（harbor 的旧伤：示例块抄了真数值，照抄即满分）。
 
@@ -1060,10 +1082,8 @@ def _check_no_answer_leak(task):
         wd = tempfile.mkdtemp(prefix="ale_leak_")
         harness.setup_env(task, wd)
         inputs, _ = _read_inputs(os.path.join(wd, "input"), limit=10 ** 9)
-        itext = "\n".join(inputs.values()).replace(",", "")
-        for g in gold:
-            if re.search(r"(?<![\d.])%s(?![\d])" % re.escape("%g" % g), itext):
-                seen_in_input.add(g)
+        iforms = _num_forms("\n".join(inputs.values()).replace(",", ""))
+        seen_in_input = {g for g in gold if "%g" % g in iforms}
     except Exception:  # noqa: BLE001 读不出附件就不做排除，宁可多报不漏报
         seen_in_input = set()
     allow = set()
@@ -1074,8 +1094,8 @@ def _check_no_answer_leak(task):
             pass
     ptext = (json.dumps(task.card.get("prompt", ""), ensure_ascii=False)
              + json.dumps(task.card.get("交付要求", {}), ensure_ascii=False)).replace(",", "")
-    hits = sorted(g for g in gold - seen_in_input - allow
-                  if re.search(r"(?<![\d.])%s(?![\d])" % re.escape("%g" % g), ptext))
+    pforms = _num_forms(ptext)
+    hits = sorted(g for g in gold - seen_in_input - allow if "%g" % g in pforms)
     if hits:
         return False, ["题面出现了标准答案里的数（照抄即得分）：%s" % hits[:12],
                        "若确属题面必须给出的已知量，写进 元数据.题面允许数值 并注明理由"] + skip_note

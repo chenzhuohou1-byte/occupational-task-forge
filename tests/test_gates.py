@@ -429,9 +429,28 @@ def test_leak_scan_skip():
         shutil.rmtree(t.dir, ignore_errors=True)
 
 
+def test_leak_num_forms():
+    """泄答案闸：一次扫出文本里的数再按集合查，命中口径必须与逐个 gold 正则扫全文一致。"""
+    import re
+    print("\n[泄答案闸·集合查找与逐个正则同口径]")
+
+    def by_regex(g, text):
+        return bool(re.search(r"(?<![\d.])%s(?![\d])" % re.escape("%g" % g), text))
+
+    golds = [1234.0, -1500.0, 1500.0, 12345.67, 1e6, 1234567.0, 2.5e12, 1001.0]
+    texts = ["合计 1234 元", "1234.5", "12345.7", "-1500", "x-1500.0y", "e-1500", "15000",
+             "21500", "1.5001500", "1e+06", "1e+060", "9E1.23457e+06cc", "2.5e+12",
+             "12345.76e1001  x0", "150012345.7e-1500.0848", "1234-1500", "0.1234", "a1001b"]
+    bad = [(g, s) for s in texts for g in golds
+           if by_regex(g, s) != ("%g" % g in qc._num_forms(s))]
+    check(not bad, "负号/小数/指数/重叠写法 %d 种 × gold %d 个 命中一致：%s"
+          % (len(texts), len(golds), bad[:5]))
+
+
 def main():
     for fn in (test_tiers, test_tier_rejects, test_purpose, test_majority_repro, test_source,
-               test_tacit_sources, test_basis_ref_suffix, test_spec_defects, test_leak_scan_skip):
+               test_tacit_sources, test_basis_ref_suffix, test_spec_defects, test_leak_scan_skip,
+               test_leak_num_forms):
         fn()
     if FAILURES:
         print("\n✗ %d 项不符预期：\n  - %s" % (len(FAILURES), "\n  - ".join(FAILURES)))
