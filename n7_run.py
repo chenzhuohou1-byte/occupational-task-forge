@@ -262,14 +262,25 @@ def write_card(task, entry):
     task.card = card
     ok, d = qc.difficulty_tier(task)
     tier = d.get("tier") if ok else None
-    if not appended and card.get("tier") == tier:
+    # §6.5 测试集只收实测 L2+：卡上是测试集、新算出来是 L1 或推定级 → 用途跟着改训练集。
+    # 只降不升：训练集挪测试集还要看家族与溯源，由人决定。定不出级时不动。
+    purpose, _ = qc.task_purpose(task)
+    fit, why = qc.purpose_tier_ok(purpose, tier, d.get("级别来源")) if ok else (True, "")
+    moved = ""
+    if not fit:
+        card["用途"] = "训练集"
+        moved = "；用途 测试集 → 训练集（%s %s）" % (tier, d.get("级别来源"))
+        print("ℹ️  %s：卡上用途是测试集，但 qc 定级为 %s %s，测试集只收实测 L2 及以上，"
+              "已改成训练集。补测到实测 L2+ 后可手动改回测试集。" % (task.task_id, tier, d.get("级别来源")),
+              file=sys.stderr)
+    if not appended and card.get("tier") == tier and not moved:
         return False, "完全相同的条目已在卡上、tier 已是 %s，跳过" % tier
     card["tier"] = tier
     with open(path, "w", encoding="utf-8") as f:   # 保持原文件是否带结尾换行，减少无关 diff
         f.write(json.dumps(card, ensure_ascii=False, indent=2) + ("\n" if raw.endswith("\n") else ""))
-    return True, "%s；tier=%s%s" % (
+    return True, "%s；tier=%s%s%s" % (
         "已追加到 %s（第 %d 条）" % (path, len(md)) if appended else "条目已在卡上，只刷新 tier",
-        tier if ok else "定不出（写 null）", "（%s）" % d.get("级别来源") if ok else "")
+        tier if ok else "定不出（写 null）", "（%s）" % d.get("级别来源") if ok else "", moved)
 
 
 def _write_card_selftest(task):
@@ -310,10 +321,33 @@ def _write_card_selftest(task):
         assert write_card(t, dict(front))[0], "tier 与派生值不符时应刷新"
         c = tasks.load_task(d).card
         assert c["tier"] == "L3" and len(c["measuredDifficulty"]) == n0 + 2, c.get("tier")
+
+        # 用途跟着定级走（§6.5）：测试集 + 实测 L3 不动；测试集 + L1 → 训练集；训练集不会被改回测试集
+        def _set(**kv):
+            cc = tasks.load_task(d).card
+            cc.update(kv)
+            with open(os.path.join(d, "task_card.json"), "w", encoding="utf-8") as f:
+                json.dump(cc, f, ensure_ascii=False, indent=2)
+        _set(用途="测试集")
+        write_card(tasks.load_task(d), dict(front))
+        assert tasks.load_task(d).card["用途"] == "测试集", "实测 L3 的测试集题不该被改"
+        cheap = {"model": "glm-5.3-flash", "toolset": "agent-file-python", "budget": {"maxSteps": 20},
+                 "scorerVersion": sv, "nRuns": 3, "fullPassRate": 1.0, "meanScore": 1.0, "measuredAt": "2026-11-11"}
+        changed, msg = write_card(tasks.load_task(d), cheap)
+        c = tasks.load_task(d).card
+        assert changed and c["tier"] == "L1" and c["用途"] == "训练集" and "训练集" in msg, (c.get("用途"), msg)
+        _set(用途="训练集", measuredDifficulty=c["measuredDifficulty"][:-1])
+        write_card(tasks.load_task(d), dict(front))
+        assert tasks.load_task(d).card["用途"] == "训练集", "训练集不该被自动改成测试集"
+        # 推定级同样不许留在测试集：前沿档只有 3 跑 → L4 推定 → 训练集
+        _set(用途="测试集", measuredDifficulty=c["measuredDifficulty"][:n0])
+        write_card(tasks.load_task(d), {**front, "nRuns": 3, "fullPassRate": 0.0})
+        c = tasks.load_task(d).card
+        assert c["用途"] == "训练集", (c.get("tier"), c.get("用途"))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     assert open(os.path.join(task.dir, "task_card.json"), encoding="utf-8").read() == orig, "原卡被改了"
-    print("[selftest] write_card：追加/去重/拒写 nRuns=0、tier 按 qc.difficulty_tier 回填与刷新，原卡未动",
+    print("[selftest] write_card：追加/去重/拒写 nRuns=0、tier 按 qc.difficulty_tier 回填与刷新、测试集定出 L1/推定级自动改训练集，原卡未动",
           file=sys.stderr)
 
 
