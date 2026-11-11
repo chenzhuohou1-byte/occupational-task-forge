@@ -610,6 +610,14 @@ LEGACY_AGENT_TOOLSET = "agent-file-tools"
 # 卡上 evaluation.visionRequired=true 的题只认它为实测（不能看图的测量把 harness 缺口算成难度）。
 VISION_TOOLSET = "agent-file-vision"
 CURRENT_TOOLSETS = (AGENT_TOOLSET, VISION_TOOLSET)
+# 外部 agent 的测量（2026-11-11，§6.3 校准附注 6）：如外部专家题用 zulu 跑的 10 轮，交付物原件由我们
+# 用卡上判分器重判后导入（pipeline/expert_bridge.py import），记成 toolset="external:<agent>"。
+# 能定级，但资格校准（在已定级锚点题上和我们的考法对齐）之前一律只给推定级，优先级排在我们的考法之后。
+EXTERNAL_PREFIX = "external:"
+
+
+def _is_external(e):
+    return str((e or {}).get("toolset", "")).startswith(EXTERNAL_PREFIX)
 
 
 def _latest_agent_run(md, model, cur_ver, prefer=None):
@@ -623,12 +631,13 @@ def _latest_agent_run(md, model, cur_ver, prefer=None):
     """
     hit = [e for e in md if str(e.get("model", "")).lower() == model
            and str(e.get("scorerVersion", "")).strip() == cur_ver
-           and str(e.get("toolset", "")) in CURRENT_TOOLSETS + (LEGACY_AGENT_TOOLSET,)
+           and (str(e.get("toolset", "")) in CURRENT_TOOLSETS + (LEGACY_AGENT_TOOLSET,) or _is_external(e))
            and not [k for k in _MD_REQUIRED if not e.get(k)]]
     if hit:
-        # 排序键：指定考法优先（visionRequired 的题优先看图档）> 现行考法 > 旧考法；同级取最近
+        # 排序键：指定考法优先（visionRequired 的题优先看图档）> 现行考法 > 旧考法 > 外部 agent；同级取最近
         return sorted(hit, key=lambda x: (prefer is not None and str(x.get("toolset")) == prefer,
                                           str(x.get("toolset")) in CURRENT_TOOLSETS,
+                                          not _is_external(x),
                                           str(x.get("measuredAt", ""))))[-1], ""
     same_model = [e for e in md if str(e.get("model", "")).lower() == model]
     cur_any = [e for e in same_model
@@ -647,9 +656,18 @@ def _vision_hedge(need_vision, entries):
     （契约 §6.3 校准附注 4），只给推定级、提示按 agent-file-vision 重测。"""
     if not need_vision:
         return []
-    bad = [n for n, e in entries if e and str(e.get("toolset")) != VISION_TOOLSET]
+    # 外部 agent 自带看图能力（zulu 读图片返回像素），且已由 _external_hedge 降推定，不再重复提示
+    bad = [n for n, e in entries if e and str(e.get("toolset")) != VISION_TOOLSET and not _is_external(e)]
     return (["%s 不是看图考法（任务卡 visionRequired=true），失分可能来自看不见图，需按 %s 重测"
              % ("/".join(bad), VISION_TOOLSET)] if bad else [])
+
+
+def _external_hedge(entries):
+    """外部 agent 的测量（§6.3 校准附注 6）：资格校准前只给推定级。"""
+    ext = [(n, e) for n, e in entries if e and _is_external(e)]
+    return (["%s 是外部 agent 测量（%s），该 agent 在锚点题上做资格校准之前只给推定级"
+             % ("/".join(n for n, _ in ext), "/".join(sorted({str(e.get("toolset")) for _, e in ext})))]
+            if ext else [])
 
 
 def _md_row(e):
@@ -715,6 +733,7 @@ def difficulty_tier(task):
         if str(front.get("toolset")) == LEGACY_AGENT_TOOLSET:
             hedge.append("前沿档是旧考法 agent-file-tools（不能跑代码，偏硬），需按 %s 重测" % AGENT_TOOLSET)
         hedge += _vision_hedge(need_vision, [("前沿档", front)])
+        hedge += _external_hedge([("前沿档", front)])
         src = "推定" if hedge else "实测"
         return True, {**base, "tier": tier, "级别来源": src, "可判定": True,
                       "说明": note, **({"待补": hedge} if hedge else {})}
@@ -746,6 +765,7 @@ def difficulty_tier(task):
                      % ("/".join(legacy), AGENT_TOOLSET))
     # L1 只看便宜档：便宜档不看图都满分了，看图只会更容易，结论站得住，不提示
     hedge += _vision_hedge(need_vision, [("前沿档", front)] if tier != "L1" else [])
+    hedge += _external_hedge([("便宜档", cheap)] + ([("前沿档", front)] if tier != "L1" else []))
     src = "推定" if hedge else "实测"
     return True, {**base, "tier": tier, "级别来源": src, "可判定": True,
                   "说明": note, **({"待补": hedge} if hedge else {})}

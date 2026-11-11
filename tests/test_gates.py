@@ -158,6 +158,22 @@ def test_tier_rejects():
     check(ok and d.get("tier") == "L1" and d.get("级别来源") == "实测",
           "visionRequired 的题便宜档不看图都满分 → L1 照给实测（看图只会更容易）")
 
+    # 外部 agent 测量 external:<agent>（2026-11-11，§6.3 校准附注 6）
+    ok, d = qc.difficulty_tier(FakeTask({**vis, "measuredDifficulty": [
+        md(FRONT, 0.0, n=10, toolset="external:zulu")]}))
+    check(ok and d.get("tier") == "L4" and d.get("级别来源") == "推定"
+          and "外部 agent" in str(d.get("待补")) and "看图" not in str(d.get("待补")),
+          "只有外部 agent 前沿档 → 照常定 L4、降推定，不重复提示看图")
+    ok, d = qc.difficulty_tier(FakeTask({**vis, "measuredDifficulty": [
+        md(CHEAP, 0.0, toolset="agent-file-vision"), md(FRONT, 0.3, n=10, toolset="agent-file-vision", at="2026-11-01"),
+        md(FRONT, 0.0, n=10, toolset="external:zulu", at="2026-11-10")]}))
+    check(ok and d["前沿档"].get("toolset") == "agent-file-vision" and d.get("级别来源") == "实测",
+          "我们的考法与外部 agent 并存 → 优先我们的考法（哪怕外部更新）")
+    ok, _, _, d = tier_of([md(FRONT, 0.0, n=10, toolset="external:")])
+    check(ok and d.get("级别来源") == "推定", "toolset 只写 external: 也按外部处理，降推定")
+    ok, _, _, d = tier_of([md(FRONT, 0.0, n=10, toolset="zulu")])
+    check(not ok, "toolset 写成裸 agent 名（没有 external: 前缀）→ 不认，定不出级")
+
 
 def test_purpose():
     print("§7 用途：训练集放宽 / 测试集严格 / 漏填按严的来")

@@ -19,7 +19,8 @@
   "hostApps": {
     "kicad": "macOS 考生环境 py3.12-sci-v3（~/ale-runtime/env.sh 的 ALE_RUN_SOFTWARE），Docker 镜像里没有",
     "blender": "同上",
-    "inkscape": "同上"
+    "inkscape": "同上",
+    "qupath": "macOS 宿主应用 ~/Applications/QuPath-0.5.1-arm64.app（外部专家病理题 0022 的作答与判分用），Docker 镜像里没有"
   },
   "images": {
     "ale-examinee:py3.12-sci-v1": "runtime/examinee/Dockerfile",
