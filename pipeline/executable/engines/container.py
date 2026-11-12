@@ -134,19 +134,22 @@ class ContainerAdapter(EngineAdapter):
                        '-v', str(public) + ':/work:ro', '--entrypoint', 'python', self.image,
                        '/work/solution/audit.py', '/work/session']
                 # 日志落临时文件，限制文件大小，不在宿主内存中无限 capture_output。
+                # 输出上限默认 1 MiB（防海量垃圾输出）；任务可经 task_meta.max_output_bytes 上调
+                # （大结果集任务，如逐户全量重算）。
+                max_bytes = int(task_meta.get('max_output_bytes', 1048576))
                 with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
                     try:
                         result = subprocess.run(cmd, stdout=stdout, stderr=stderr,
                                                 timeout=int(task_meta.get('case_timeout', 60)))
                         stdout.seek(0); stderr.seek(0)
-                        raw = stdout.read(1048577)
+                        raw = stdout.read(max_bytes + 1)
                         err = stderr.read(2000).decode(errors='replace')
                         if result.returncode in (125, 126, 127):
                             raise EngineUnavailable('docker 执行环境错误：' + err)
                         if result.returncode:
                             record = {'score': 0.0, 'passed': False, 'err': '候选异常退出：' + err}
-                        elif len(raw) > 1048576:
-                            record = {'score': 0.0, 'passed': False, 'err': '候选输出超过 1MiB'}
+                        elif len(raw) > max_bytes:
+                            record = {'score': 0.0, 'passed': False, 'err': '候选输出超过 %d 字节' % max_bytes}
                         else:
                             try:
                                 got = json.loads(raw)
