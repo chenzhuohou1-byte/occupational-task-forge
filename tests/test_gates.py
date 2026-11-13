@@ -175,6 +175,35 @@ def test_tier_rejects():
     check(not ok, "toolset 写成裸 agent 名（没有 external: 前缀）→ 不认，定不出级")
 
 
+def test_rulers():
+    print("标尺（契约 §6.3.1）：换便宜档模型后，现行尺子优先、老题退回旧尺子的测量")
+    OLD, NEW, FRONT = "glm-5.3-flash", "DeepSeek-V4.1-Flash", "Claude Sonnet 5.5"
+    saved = qc.RULERS
+    qc.RULERS = saved + ({"id": "ruler-test", "since": "2026-11-13",
+                          "cheap": NEW.lower(), "frontier": FRONT.lower()},)
+    try:
+        ok, t, src, d = tier_of([md(OLD, 1.0)])
+        check((ok, t, src) == (True, "L1", "实测") and d["便宜档"]["标尺"] == "ruler-v1",
+              "老题只有旧尺子的便宜档 → 照认 L1 实测，明细标 ruler-v1")
+
+        ok, t, _, d = tier_of([md(OLD, 1.0, at="2026-11-01"), md(NEW, 0.0, at="2026-10-01")])
+        check((ok, t) == (True, "L3+") and d["便宜档"]["标尺"] == "ruler-test",
+              "新旧尺子并存 → 用现行尺子的测量（哪怕旧尺子那条更新）")
+
+        ok, t, _, d = tier_of([md(NEW, 0.0), md(FRONT, 0.2, n=10)])
+        check((ok, t) == (True, "L3") and d["前沿档"]["标尺"] == "ruler-test",
+              "前沿档模型两把尺子相同 → 记现行尺子")
+
+        ok, t, _, d = tier_of([md(OLD, 0.0, sv="1.0")], sv="1.1")
+        check((ok, t) == (False, None) and "改版" in str(d),
+              "现行尺子未测、旧尺子判分器过期 → 报「改版」而不是「未测」")
+
+        ok, t, _, _ = tier_of([md("kimi-k3", 1.0)])
+        check((ok, t) == (False, None), "不在任何一把尺子里的模型 → 不参与定级")
+    finally:
+        qc.RULERS = saved
+
+
 def test_purpose():
     print("§7 用途：训练集放宽 / 测试集严格 / 漏填按严的来")
     check(qc.task_purpose(FakeTask({})) == ("测试集", False),
@@ -464,7 +493,7 @@ def test_leak_num_forms():
 
 
 def main():
-    for fn in (test_tiers, test_tier_rejects, test_purpose, test_majority_repro, test_source,
+    for fn in (test_tiers, test_tier_rejects, test_rulers, test_purpose, test_majority_repro, test_source,
                test_tacit_sources, test_basis_ref_suffix, test_spec_defects, test_leak_scan_skip,
                test_leak_num_forms):
         fn()

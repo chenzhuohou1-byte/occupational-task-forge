@@ -12,8 +12,15 @@ import tempfile
 from . import harness
 
 # ---- §6.3 难度分级 / §7 用途 的两组常量（2026-10-14 口径变更） ----
-CHEAP_MODEL = "glm-5.3-flash"           # 便宜档基准模型（measuredDifficulty.model 的小写形式）
-FRONTIER_MODEL = "claude sonnet 5.5"    # 前沿档基准模型（网关实收名，见契约 §6.3）
+# §6.3.1 标尺（2026-11-13）：一把尺子 = 便宜档模型 + 前沿档模型（measuredDifficulty.model 的小写形式）。
+# 换模型＝在末尾追加一把新尺子，旧行不改不删：老题上旧尺子的测量照认、级别标上用的哪把尺子，
+# 不全量重测。追加前必须先在锚点题上和现行尺子对齐（契约 §6.3.1）。门槛四个数字所有尺子共用。
+RULERS = (
+    {"id": "ruler-v1", "since": "2026-10-16", "cheap": "glm-5.3-flash", "frontier": "claude sonnet 5.5"},
+)
+RULER = RULERS[-1]                      # 现行尺子：新测量一律用它的两个模型
+CHEAP_MODEL = RULER["cheap"]            # 便宜档基准模型
+FRONTIER_MODEL = RULER["frontier"]      # 前沿档基准模型（网关实收名）
 L1_FLOOR = 2.0 / 3 - 1e-9               # 便宜档满分率 ≥ 2/3 → L1（便宜档只用来切这一刀）
 # 前沿档两刀按 ALE 论文的严格通过率刻度（§6.3）：最难层 Last-Exam 0–9%、全谱层 Full-Spectrum 13–20%
 L4_CEIL = 0.10 + 1e-9                   # 前沿档满分率 ≤ 10% → L4（≈ ALE Last-Exam）
@@ -651,6 +658,20 @@ def _latest_agent_run(md, model, cur_ver, prefer=None):
     return None, "未测（该基准模型没有任何测量条目）"
 
 
+def _ruler_run(md, slot, cur_ver, prefer=None):
+    """按现行尺子 → 旧尺子的顺序找该档（slot = cheap / frontier）的测量，返回 (条目, 缺的原因, 尺子 id)。
+
+    现行尺子有测量就用它；没有才退到旧尺子（老题保留旧尺子的级别，§6.3.1）。都没有时，
+    原因优先报「判分器改版」「只有单发」这类比「未测」更具体的那条。"""
+    whys = []
+    for r in reversed(RULERS):
+        e, why = _latest_agent_run(md, r[slot], cur_ver, prefer)
+        if e:
+            return e, "", r["id"]
+        whys.append(why)
+    return None, next((w for w in whys if not w.startswith("未测")), whys[0]), None
+
+
 def _vision_hedge(need_vision, entries):
     """visionRequired 的题：定级用的测量若不是看图考法，失分里混着「看不见图」这一 harness 缺口
     （契约 §6.3 校准附注 4），只给推定级、提示按 agent-file-vision 重测。"""
@@ -704,11 +725,11 @@ def difficulty_tier(task):
                                        "是不是当前判分器测的（契约 §6.2）"}
     need_vision = bool((task.card.get("evaluation") or {}).get("visionRequired"))
     prefer = VISION_TOOLSET if need_vision else None
-    cheap, cheap_why = _latest_agent_run(md, CHEAP_MODEL, cur_ver, prefer)
-    front, front_why = _latest_agent_run(md, FRONTIER_MODEL, cur_ver, prefer)
+    cheap, cheap_why, cheap_ruler = _ruler_run(md, "cheap", cur_ver, prefer)
+    front, front_why, front_ruler = _ruler_run(md, "frontier", cur_ver, prefer)
     base = {**base, "判分器版本": cur_ver,
-            "便宜档": _md_row(cheap) if cheap else {"缺": cheap_why},
-            "前沿档": _md_row(front) if front else {"缺": front_why}}
+            "便宜档": {**_md_row(cheap), "标尺": cheap_ruler} if cheap else {"缺": cheap_why},
+            "前沿档": {**_md_row(front), "标尺": front_ruler} if front else {"缺": front_why}}
     cfpr = cheap.get("fullPassRate") if cheap else None
     ffpr = front.get("fullPassRate") if front else None
     if not isinstance(cfpr, (int, float)) and not isinstance(ffpr, (int, float)):
