@@ -175,6 +175,46 @@ def test_tier_rejects():
     check(not ok, "toolset 写成裸 agent 名（没有 external: 前缀）→ 不认，定不出级")
 
 
+def test_rulers():
+    print("考生模型（契约 §6.3.1）：便宜档名单任选且合并跑数，前沿档按版本、老题退回旧版")
+    GLM, DS, ERNIE, FRONT = "GLM-5.3-Flash", "DeepSeek-V4.1-Flash", "ERNIE-5.5-Flash-Preview", "Claude Sonnet 5.5"
+
+    ok, t, src, _ = tier_of([md(DS, 1.0)])
+    check((ok, t, src) == (True, "L1", "实测"), "只有 DeepSeek 便宜档 3/3 → L1 实测（名单内任选）")
+
+    ok, t, _, d = tier_of([md(GLM, 2.0 / 3), md(DS, 1.0 / 3)])
+    check((ok, t) == (True, "L2") and d["便宜档"]["nRuns"] == 6 and d["便宜档"]["fullPassRate"] == 0.5,
+          "GLM 2/3 + DeepSeek 1/3 → 合并 3/6=0.5 → 非 L1（不许挑满分的那条）")
+
+    ok, t, _, d = tier_of([md(GLM, 0.0), md(ERNIE, 1.0), md(DS, 1.0)])
+    check((ok, t) == (True, "L1") and d["便宜档"]["nRuns"] == 9, "三个便宜模型 6/9 → 合并 2/3 → L1")
+
+    ok, t, _, d = tier_of([md(GLM, 0.0, at="2026-10-01"), md(GLM, 1.0, at="2026-11-01"), md(DS, 1.0)])
+    check((ok, t) == (True, "L1") and d["便宜档"]["nRuns"] == 6, "同一模型多条只取最近一条再合并")
+
+    ok, t, src, d = tier_of([md(GLM, 1.0, toolset="agent-file-tools"), md(DS, 0.0)])
+    check((ok, t, src) == (True, "L3+", "推定") and d["便宜档"]["nRuns"] == 3,
+          "旧考法与现行考法不合并，只用现行考法那组")
+
+    ok, t, _, _ = tier_of([md("kimi-k3", 1.0)])
+    check((ok, t) == (False, None), "不在便宜档名单里的模型 → 不参与定级")
+
+    saved = qc.FRONTIER_RULERS
+    qc.FRONTIER_RULERS = saved + ({"id": "frontier-test", "since": "2026-11-16", "model": "gpt-6.1-sol"},)
+    try:
+        ok, t, _, d = tier_of([md(GLM, 0.0), md(FRONT, 0.0, n=10)])
+        check((ok, t) == (True, "L4") and d["前沿档"]["前沿档版本"] == "frontier-v1",
+              "老题只有旧前沿档 → 照认 L4，明细记 frontier-v1")
+        ok, t, _, d = tier_of([md(GLM, 0.0), md(FRONT, 0.0, n=10, at="2026-11-20"),
+                               md("gpt-6.1-sol", 0.5, n=10, at="2026-11-01")])
+        check((ok, t) == (True, "L2") and d["前沿档"]["前沿档版本"] == "frontier-test",
+              "新旧前沿档并存 → 用现行那个（哪怕旧的那条更新）")
+        ok, t, _, d = tier_of([md(FRONT, 0.0, n=10, sv="1.0")], sv="1.1")
+        check((ok, t) == (False, None) and "改版" in str(d), "前沿档缺测时报「改版」而不是「未测」")
+    finally:
+        qc.FRONTIER_RULERS = saved
+
+
 def test_purpose():
     print("§7 用途：训练集放宽 / 测试集严格 / 漏填按严的来")
     check(qc.task_purpose(FakeTask({})) == ("测试集", False),
@@ -464,7 +504,7 @@ def test_leak_num_forms():
 
 
 def main():
-    for fn in (test_tiers, test_tier_rejects, test_purpose, test_majority_repro, test_source,
+    for fn in (test_tiers, test_tier_rejects, test_rulers, test_purpose, test_majority_repro, test_source,
                test_tacit_sources, test_basis_ref_suffix, test_spec_defects, test_leak_scan_skip,
                test_leak_num_forms):
         fn()

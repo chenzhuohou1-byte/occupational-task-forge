@@ -661,6 +661,14 @@ def main():
               % (tier, full_pass, n_ok, hint), file=sys.stderr)
     elif tier and tier not in TIERS:
         print("⚠️  N7_TIER=%r 不认识，只认 便宜档/前沿档" % tier, file=sys.stderr)
+    # 契约 §6.3.1：便宜档名单里任选、前沿档只认现行那一个；不在名单里的测量照记，但 qc 不拿它定级
+    m = str(entry.get("model", "")).lower()
+    if tier == "便宜档" and m not in qc.CHEAP_MODELS:
+        print("⚠️  %s 不在便宜档名单 %s 里：测量照记，但 qc 不拿它定级"
+              % (entry.get("model"), sorted(qc.CHEAP_MODELS)), file=sys.stderr)
+    elif tier == "前沿档" and m != qc.FRONTIER_MODEL:
+        print("⚠️  %s 不是现行前沿档（%s）：测量照记，但 qc 不拿它定级"
+              % (entry.get("model"), qc.FRONTIER_MODEL), file=sys.stderr)
 
     if out:
         _flush(False, report)

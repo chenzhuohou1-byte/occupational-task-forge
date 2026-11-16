@@ -12,8 +12,20 @@ import tempfile
 from . import harness
 
 # ---- §6.3 难度分级 / §7 用途 的两组常量（2026-10-14 口径变更） ----
-CHEAP_MODEL = "glm-5.3-flash"           # 便宜档基准模型（measuredDifficulty.model 的小写形式）
-FRONTIER_MODEL = "claude sonnet 5.5"    # 前沿档基准模型（网关实收名，见契约 §6.3）
+# §6.3.1 考生模型（2026-11-16）。两档管法不同：
+#   便宜档只切 L1 一刀，名单里的模型任选（值是准入日期，准入前要过锚点对齐）；一道题有几个
+#   便宜模型的测量就**合并跑数**算满分率，不挑最好看的那条 —— 防挑模型，也顺带压 3 跑噪声。
+#   前沿档切 L2/L3/L4 三级，同一时刻只认一个：换模型＝在 FRONTIER_RULERS 末尾追加，旧行不改不删，
+#   老题上旧前沿档的测量照认、明细记用的哪一版，不全量重测。
+CHEAP_MODELS = {                        # measuredDifficulty.model 的小写形式 → 准入日期
+    "glm-5.3-flash": "2026-10-16",
+    "deepseek-v4.1-flash": "2026-11-16",
+    "ernie-5.5-flash-preview": "2026-11-16",
+}
+FRONTIER_RULERS = (
+    {"id": "frontier-v1", "since": "2026-10-16", "model": "claude sonnet 5.5"},
+)
+FRONTIER_MODEL = FRONTIER_RULERS[-1]["model"]   # 现行前沿档（网关实收名），新测量一律用它
 L1_FLOOR = 2.0 / 3 - 1e-9               # 便宜档满分率 ≥ 2/3 → L1（便宜档只用来切这一刀）
 # 前沿档两刀按 ALE 论文的严格通过率刻度（§6.3）：最难层 Last-Exam 0–9%、全谱层 Full-Spectrum 13–20%
 L4_CEIL = 0.10 + 1e-9                   # 前沿档满分率 ≤ 10% → L4（≈ ALE Last-Exam）
@@ -651,6 +663,49 @@ def _latest_agent_run(md, model, cur_ver, prefer=None):
     return None, "未测（该基准模型没有任何测量条目）"
 
 
+def _first_specific(whys):
+    """几条「缺」的原因里，优先报「判分器改版」「只有单发」这类比「未测」更具体的那条。"""
+    return next((w for w in whys if not w.startswith("未测")), whys[0])
+
+
+def _frontier_run(md, cur_ver, prefer=None):
+    """按现行前沿档 → 旧前沿档的顺序找测量，返回 (条目, 缺的原因, 版本 id)。
+    现行前沿档有测量就用它；没有才退到旧的（老题保留旧前沿档的级别，§6.3.1）。"""
+    whys = []
+    for r in reversed(FRONTIER_RULERS):
+        e, why = _latest_agent_run(md, r["model"], cur_ver, prefer)
+        if e:
+            return e, "", r["id"]
+        whys.append(why)
+    return None, _first_specific(whys), None
+
+
+def _cheap_pool(md, cur_ver, prefer=None):
+    """便宜档：名单里每个模型各取最近一条有效测量，考法最优先的那一组**合并跑数**，返回 (条目, 缺的原因)。
+
+    合并而不是挑一条：作者想要 L1 就挑满分的模型、想进测试集就挑 0 分的模型，名单一放开这就是现成的
+    口子；合并后多测一个模型只会让满分率往各模型的平均靠。考法不同的不合并（旧考法偏硬、看图考法
+    另算），只取排序最靠前的那一组，排序键与 _latest_agent_run 一致。"""
+    got, whys = [], []
+    for m in CHEAP_MODELS:
+        e, why = _latest_agent_run(md, m, cur_ver, prefer)
+        (got.append(e) if e else whys.append(why))
+    if not got:
+        return None, _first_specific(whys)
+    key = lambda x: (prefer is not None and str(x.get("toolset")) == prefer,
+                     str(x.get("toolset")) in CURRENT_TOOLSETS, not _is_external(x))
+    top = max(key(e) for e in got)
+    grp = sorted((e for e in got if key(e) == top), key=lambda x: str(x.get("model", "")).lower())
+    if len(grp) == 1:
+        return grp[0], ""
+    n = sum(int(e["nRuns"]) for e in grp)
+    passed = sum(round(float(e["fullPassRate"]) * int(e["nRuns"])) for e in grp)
+    mean = sum(float(e.get("meanScore") or 0) * int(e["nRuns"]) for e in grp) / n
+    return {**grp[0], "model": "+".join(str(e.get("model")) for e in grp), "nRuns": n,
+            "fullPassRate": round(passed / n, 4), "meanScore": round(mean, 4),
+            "measuredAt": max(str(e.get("measuredAt", "")) for e in grp)}, ""
+
+
 def _vision_hedge(need_vision, entries):
     """visionRequired 的题：定级用的测量若不是看图考法，失分里混着「看不见图」这一 harness 缺口
     （契约 §6.3 校准附注 4），只给推定级、提示按 agent-file-vision 重测。"""
@@ -704,11 +759,11 @@ def difficulty_tier(task):
                                        "是不是当前判分器测的（契约 §6.2）"}
     need_vision = bool((task.card.get("evaluation") or {}).get("visionRequired"))
     prefer = VISION_TOOLSET if need_vision else None
-    cheap, cheap_why = _latest_agent_run(md, CHEAP_MODEL, cur_ver, prefer)
-    front, front_why = _latest_agent_run(md, FRONTIER_MODEL, cur_ver, prefer)
+    cheap, cheap_why = _cheap_pool(md, cur_ver, prefer)
+    front, front_why, front_ver = _frontier_run(md, cur_ver, prefer)
     base = {**base, "判分器版本": cur_ver,
             "便宜档": _md_row(cheap) if cheap else {"缺": cheap_why},
-            "前沿档": _md_row(front) if front else {"缺": front_why}}
+            "前沿档": {**_md_row(front), "前沿档版本": front_ver} if front else {"缺": front_why}}
     cfpr = cheap.get("fullPassRate") if cheap else None
     ffpr = front.get("fullPassRate") if front else None
     if not isinstance(cfpr, (int, float)) and not isinstance(ffpr, (int, float)):
