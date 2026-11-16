@@ -19,6 +19,38 @@ from ...dockercli import docker_bin
 from .base import EngineAdapter, EngineUnavailable, CaseResult, DeployResult
 
 DEFAULT_IMAGE = "python:3.12-slim"
+# 单次调用的默认参数：与扩展前的行为一致（只把会话目录传给交付脚本）
+DEFAULT_INVOCATIONS = [{"name": "main", "args": ["{session}"]}]
+
+
+def _render(args, mapping):
+    """把 invocation 的参数模板展开成容器内路径（{session}/{out}/{case}）。"""
+    out = []
+    for a in args:
+        s = str(a)
+        for k, v in mapping.items():
+            s = s.replace("{%s}" % k, v)
+        out.append(s)
+    return out
+
+
+def _call_scorer(module, got, expected, session, runs, artifacts):
+    """兼容两代 host_scorer 签名。
+
+    老签名 `score_case(got, expected, session)` 继续可用（got = 首次调用的 stdout JSON）；
+    新签名可声明 `runs` / `artifacts` 形参，拿到全部调用的输出与产物目录做隐藏校验。
+    """
+    import inspect
+    try:
+        params = inspect.signature(module.score_case).parameters
+    except (TypeError, ValueError):       # 内建/C 实现拿不到签名，按老签名调
+        return module.score_case(got, expected, session)
+    kwargs = {}
+    if "runs" in params:
+        kwargs["runs"] = runs
+    if "artifacts" in params:
+        kwargs["artifacts"] = artifacts
+    return module.score_case(got, expected, session, **kwargs)
 
 
 class ContainerAdapter(EngineAdapter):
@@ -91,7 +123,14 @@ class ContainerAdapter(EngineAdapter):
                             detail={"image": self.image, "ran_cases": len(by_case)})
 
     def _deploy_host_scored(self, output_dir, task_meta):
-        """只挂载候选和单 case session；trusted scorer/expected 永不进入容器。"""
+        """只挂载候选和单 case session；trusted scorer/expected 永不进入容器。
+
+        支持两种交付面：
+          ① 单次调用 + stdout（默认，与扩展前完全一致）；
+          ② 多次调用 + 产物目录：`task_meta.invocations` 给每个 case 要跑的若干次调用
+             （参数模板 {session}/{out}/{case}，考生看不到清单），`task_meta.artifact_dir`
+             给一个容器内可写目录名，跑完由宿主侧 scorer 对产物跑隐藏校验。
+        """
         import importlib.util
         from pathlib import Path
         import uuid
@@ -107,6 +146,12 @@ class ContainerAdapter(EngineAdapter):
         spec = importlib.util.spec_from_file_location("trusted_host_scorer", scorer_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        invocations = task_meta.get("invocations") or DEFAULT_INVOCATIONS
+        if not isinstance(invocations, list) or not all(
+                isinstance(i, dict) and i.get("args") for i in invocations):
+            raise EngineUnavailable("invocations 配置非法（须是 [{name,args}] 列表）")
+        artifact_dirname = task_meta.get("artifact_dir")
+        fsize = int(task_meta.get("max_artifact_bytes", 1048576))
         # 不执行候选 import；仅导入作者控制的可信 scorer。
         by_case = {}
         for case in sorted(cases_dir.iterdir()):
@@ -124,49 +169,87 @@ class ContainerAdapter(EngineAdapter):
                 for p in public.rglob('*'):
                     p.chmod(0o755 if p.is_dir() else 0o644)
                 public.chmod(0o755)
-                name = 'ale-candidate-' + uuid.uuid4().hex
-                cmd = [docker_bin(), 'run', '--rm', '--name', name, '--network', 'none',
-                       '--user', '65534:65534', '--read-only', '--cap-drop', 'ALL',
-                       '--security-opt', 'no-new-privileges', '--memory', '512m',
-                       '--cpus', '1', '--pids-limit', '64', '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m',
-                       '--ulimit', 'fsize=1048576:1048576',
-                       '-e', 'OPENBLAS_NUM_THREADS=1', '-e', 'PYTHONDONTWRITEBYTECODE=1',
-                       '-v', str(public) + ':/work:ro', '--entrypoint', 'python', self.image,
-                       '/work/solution/audit.py', '/work/session']
-                # 日志落临时文件，限制文件大小，不在宿主内存中无限 capture_output。
-                # 输出上限默认 1 MiB（防海量垃圾输出）；任务可经 task_meta.max_output_bytes 上调
-                # （大结果集任务，如逐户全量重算）。
-                max_bytes = int(task_meta.get('max_output_bytes', 1048576))
-                with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-                    try:
-                        result = subprocess.run(cmd, stdout=stdout, stderr=stderr,
-                                                timeout=int(task_meta.get('case_timeout', 60)))
-                        stdout.seek(0); stderr.seek(0)
-                        raw = stdout.read(max_bytes + 1)
-                        err = stderr.read(2000).decode(errors='replace')
-                        if result.returncode in (125, 126, 127):
-                            raise EngineUnavailable('docker 执行环境错误：' + err)
-                        if result.returncode:
-                            record = {'score': 0.0, 'passed': False, 'err': '候选异常退出：' + err}
-                        elif len(raw) > max_bytes:
-                            record = {'score': 0.0, 'passed': False, 'err': '候选输出超过 %d 字节' % max_bytes}
-                        else:
-                            try:
-                                got = json.loads(raw)
-                            except (ValueError, UnicodeError):
-                                record = {'score': 0.0, 'passed': False, 'err': '候选未输出合法 JSON'}
-                            else:
-                                record = module.score_case(got, expected, str(session))
-                    except subprocess.TimeoutExpired:
-                        record = {'score': 0.0, 'passed': False, 'err': '候选执行超时'}
-                    finally:
-                        subprocess.run([docker_bin(), 'rm', '-f', name], capture_output=True, timeout=20)
+                arts = None
+                if artifact_dirname:
+                    # 产物目录建在 public 之外、rw 挂载盖在只读根上；挂载点要先在 public 里
+                    # 存在（只读 rootfs 上 docker 没法替我们 mkdir 挂载点）
+                    (public / artifact_dirname).mkdir(exist_ok=True)
+                    (public / artifact_dirname).chmod(0o755)
+                    arts = Path(work + "_out")
+                    arts.mkdir(parents=True, exist_ok=True)
+                    arts.chmod(0o777)
+                runs, record = self._run_invocations(
+                    public, arts, artifact_dirname, invocations, task_meta, case.name, fsize)
+                if record is None:
+                    first = next((r for r in runs.values() if r.get("json") is not None), None)
+                    got = first["json"] if first else None
+                    if got is None and not artifact_dirname:
+                        record = {'score': 0.0, 'passed': False, 'err': '候选未输出合法 JSON'}
+                    else:
+                        record = _call_scorer(module, got, expected, str(session),
+                                              runs, str(arts) if arts else None)
+                if arts is not None:
+                    shutil.rmtree(arts, ignore_errors=True)
                 by_case[case.name] = dict(record, name=case.name)
         if not by_case:
             raise EngineUnavailable('隐藏 cases 为空')
         return DeployResult(True, handle={'by_case': by_case},
                             detail={'image': self.image, 'ran_cases': len(by_case),
-                                    'expected_mount': False, 'host_scored': True})
+                                    'expected_mount': False, 'host_scored': True,
+                                    'invocations': [i.get("name") for i in invocations],
+                                    'artifact_dir': bool(artifact_dirname)})
+
+    def _run_invocations(self, public, arts, artifact_dirname, invocations, task_meta,
+                         case_name, fsize):
+        """按清单逐次起容器跑候选产物。返回 (runs, 失败 record 或 None)。"""
+        import uuid
+        max_bytes = int(task_meta.get('max_output_bytes', 1048576))
+        mapping = {"session": "/work/session", "case": case_name,
+                   "out": "/work/" + (artifact_dirname or "out")}
+        runs = {}
+        for inv in invocations:
+            name = 'ale-candidate-' + uuid.uuid4().hex
+            cmd = [docker_bin(), 'run', '--rm', '--name', name, '--network', 'none',
+                   '--user', '65534:65534', '--read-only', '--cap-drop', 'ALL',
+                   '--security-opt', 'no-new-privileges', '--memory', '512m',
+                   '--cpus', '1', '--pids-limit', '64',
+                   '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m',
+                   '--ulimit', 'fsize=%d:%d' % (fsize, fsize),
+                   '-e', 'OPENBLAS_NUM_THREADS=1', '-e', 'PYTHONDONTWRITEBYTECODE=1',
+                   '-v', str(public) + ':/work:ro']
+            if arts is not None:
+                cmd += ['-v', '%s:%s:rw' % (arts, mapping["out"])]
+            cmd += ['--entrypoint', 'python', self.image, '/work/solution/audit.py']
+            cmd += _render(inv["args"], mapping)
+            with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+                try:
+                    result = subprocess.run(cmd, stdout=stdout, stderr=stderr,
+                                            timeout=int(task_meta.get('case_timeout', 60)))
+                    stdout.seek(0); stderr.seek(0)
+                    raw = stdout.read(max_bytes + 1)
+                    err = stderr.read(2000).decode(errors='replace')
+                    if result.returncode in (125, 126, 127):
+                        raise EngineUnavailable('docker 执行环境错误：' + err)
+                    if result.returncode:
+                        return runs, {'score': 0.0, 'passed': False,
+                                      'err': '候选调用 %s 异常退出：%s' % (inv.get("name"), err)}
+                    if len(raw) > max_bytes:
+                        return runs, {'score': 0.0, 'passed': False,
+                                      'err': '候选调用 %s 输出超过 %d 字节' % (inv.get("name"), max_bytes)}
+                    try:
+                        parsed = json.loads(raw)
+                    except (ValueError, UnicodeError):
+                        parsed = None
+                    runs[inv.get("name") or str(len(runs))] = {
+                        "json": parsed, "stdout": raw[:4096].decode(errors='replace'),
+                        "args": _render(inv["args"], mapping)}
+                except subprocess.TimeoutExpired:
+                    return runs, {'score': 0.0, 'passed': False,
+                                  'err': '候选调用 %s 执行超时' % inv.get("name")}
+                finally:
+                    subprocess.run([docker_bin(), 'rm', '-f', name],
+                                   capture_output=True, timeout=20)
+        return runs, None
 
     def run_case(self, handle, case, task_meta):
         cid = case["id"] if isinstance(case, dict) else case
