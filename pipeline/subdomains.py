@@ -25,12 +25,11 @@ _PATH = os.path.join(HERE, "subdomains.json")
 # 口径依据 `ALE领域与公开源_建题可行性.md`（本机实测公开源 + 软件开源性）——注意它与
 # 「方向调整文档第六节」说的不是一回事：那边说的是**跑 ALE 自己那些任务**要 x86 Linux 虚拟机，
 # 而我们是**自己造题**，Blender/Inkscape/KiCad/Qiskit 在 arm64 上原生可跑，故不属做不了。
-BLOCKED = {
-    "8.4": ("授权软件", "ALE 原题用 Cubase/Dorico（需授权）；音频文件可自造，待评估后再开"),
-}
+BLOCKED = {}
 
 # 可派活但取数要绕的子域：源被挡或软件较重，派活前先看这条。
 SOURCE_NOTES = {
+    "8.4": "开放 Python 音频分析与编辑类题目，使用已登记的 bench-audio；仅派发可用开源工具、无需授权软件的任务",
     "6.1": "SEC（sec.gov）本机被挡，换 data.gov / Kaggle 取数",
     "6.4": "SEC 被挡，同 6.1",
     "9.6": "Docker/k8s/Terraform 均开源，但嵌套 Docker 需本地 Docker 环境",
