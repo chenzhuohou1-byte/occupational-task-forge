@@ -229,7 +229,8 @@ def _exec_checklist_payload(task):
     need = sum(1 for i in items if i["必需"])
     return {"task_id": task.task_id, "范式": ev.get("type"), "adapter": (ev.get("engine") or {}).get("adapter"),
             "必需已填": done, "必需合计": need, "可跑qc": done == need, "清单": items,
-            "n7命令": ('ALE_LLM_PROVIDER=openai ALE_LLM_MODEL=glm-5.3-flash N7_TASK="%s" '
+            "n7命令": ('source ~/ale-runtime/env.sh && ALE_LLM_MAX_TOKENS=32000 ALE_RUN_PYTHON_TIMEOUT=600 '
+                       'ALE_LLM_PROVIDER=openai ALE_LLM_MODEL=glm-5.3-flash ALE_LLM_REASONING_EFFORT=low N7_TASK="%s" '
                        'N7_TIER=便宜档 N7_MODE=agent N7_RUNS=10 N7_OUT=runs/n7/cheap.json '
                        'ALE_TASKS_DIR="%s" python3 n7_run.py') % (task.task_id, CFG.tasks_dir)}
 
