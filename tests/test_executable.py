@@ -277,7 +277,37 @@ def test_docker_bin_fallback():
     print("✓ docker 定位：PATH 优先、缺失时回退候选安装路径、全无保持原报错口径")
 
 
+def test_invocation_rendering_and_scorer_signature():
+    """宽交付面的离线部分：调用参数模板展开 + host_scorer 两代签名兼容。"""
+    from pipeline.executable.engines import container as C
+
+    m = {"session": "/work/session", "out": "/work/out", "case": "case0"}
+    assert C._render(["{session}", "--out", "{out}/db.sqlite", "--case={case}", "3"], m) == \
+        ["/work/session", "--out", "/work/out/db.sqlite", "--case=case0", "3"]
+    assert C.DEFAULT_INVOCATIONS == [{"name": "main", "args": ["{session}"]}], \
+        "默认调用清单必须与扩展前的单次调用行为一致"
+
+    class Old:                        # 老签名：只认 (got, expected, session)
+        @staticmethod
+        def score_case(got, expected, session):
+            return {"score": float(got == expected), "passed": got == expected}
+
+    class New:                        # 新签名：额外拿 runs / artifacts
+        @staticmethod
+        def score_case(got, expected, session, runs=None, artifacts=None):
+            return {"score": 1.0, "passed": True,
+                    "info": {"runs": sorted(runs or {}), "arts": artifacts}}
+
+    assert C._call_scorer(Old, {"a": 1}, {"a": 1}, "/s", {"main": {}}, "/arts")["passed"], \
+        "老签名 scorer 必须照旧可用"
+    r = C._call_scorer(New, None, {"a": 1}, "/s", {"r1": {}, "r2": {}}, "/arts")
+    assert r["info"] == {"runs": ["r1", "r2"], "arts": "/arts"}, \
+        "新签名须拿到全部调用输出与产物目录"
+    print("✓ 多次调用参数模板 + 两代 host_scorer 签名兼容")
+
+
 def main():
+    test_invocation_rendering_and_scorer_signature()
     test_fault_and_empty_cases()
     test_scorer_imports_pipeline_without_pythonpath()
     test_docker_bin_fallback()
