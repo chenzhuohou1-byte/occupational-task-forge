@@ -983,10 +983,10 @@
       "code": "audio_music",
       "name": "Audio, Music & Post-Production Media",
       "ale_n": 3,
-      "enabled": false,
-      "blocked_by": "授权软件",
-      "blocked_note": "ALE 原题用 Cubase/Dorico（需授权）；音频文件可自造，待评估后再开",
-      "source_note": null,
+      "enabled": true,
+      "blocked_by": null,
+      "blocked_note": null,
+      "source_note": "开放 Python 音频分析与编辑类题目，使用已登记的 bench-audio；仅派发可用开源工具、无需授权软件的任务",
       "ale_examples": [
         {
           "title": "Music Transcription",
