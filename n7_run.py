@@ -109,6 +109,41 @@ def _tier_hint_selftest():
     print("[selftest] 分级提示：便宜档切 L1 / 前沿档切 L2L3L4 / 跑数不足标推定", file=sys.stderr)
 
 
+# 真实测量开跑前必须显式给的环境变量。不给时框架照样能跑，但口径是错的：
+# 11-16 一批里 4 组测量因此作废——没 source ~/ale-runtime/env.sh 时考生代码跑在产线解释器上
+# （没有 xarray/sumo，照常记 0 分）；没给超时与 max_tokens 时实际 120 s / 16000，题面写的却是 600 s。
+PREFLIGHT_TOOLSETS = ("python", "engine", "vision")   # 会调 run_python 的工具集
+
+
+def preflight(mode, tools, env=None):
+    """返回开跑前缺的设置（空表＝可以跑）。N7_ALLOW_DEFAULTS=1 可显式放行（只为复现旧口径）。"""
+    env = os.environ if env is None else env
+    miss = []
+    if not env.get("ALE_LLM_MAX_TOKENS", "").strip():
+        miss.append("ALE_LLM_MAX_TOKENS 未设（默认 16000，推理模型常写满；标准命令用 32000）")
+    if mode == "agent" and tools in PREFLIGHT_TOOLSETS:
+        if not env.get("ALE_RUN_PYTHON_TIMEOUT", "").strip():
+            miss.append("ALE_RUN_PYTHON_TIMEOUT 未设（默认 120 s；标准命令用 600，题面按 600 s 写）")
+        if (env.get("ALE_RUN_SANDBOX", "").strip().lower() or "sandbox-exec") == "sandbox-exec":
+            for k in ("ALE_RUN_PYTHON", "ALE_RUN_RUNTIME"):
+                if not env.get(k, "").strip():
+                    miss.append("%s 未设（考生代码会跑在产线解释器上，没有考生软件；先 source ~/ale-runtime/env.sh）" % k)
+    return miss
+
+
+def _preflight_selftest():
+    full = {"ALE_LLM_MAX_TOKENS": "32000", "ALE_RUN_PYTHON_TIMEOUT": "600",
+            "ALE_RUN_PYTHON": "/x/py", "ALE_RUN_RUNTIME": "py3.12-sci-v3"}
+    assert preflight("agent", "python", full) == [], "标准命令齐全应放行"
+    assert len(preflight("agent", "python", {})) == 4, "什么都没设：四项都要报"
+    assert len(preflight("agent", "python", {k: v for k, v in full.items() if k != "ALE_RUN_PYTHON_TIMEOUT"})) == 1
+    docker = {"ALE_LLM_MAX_TOKENS": "32000", "ALE_RUN_PYTHON_TIMEOUT": "600", "ALE_RUN_SANDBOX": "docker"}
+    assert preflight("agent", "python", docker) == [], "docker 后端不看宿主解释器变量"
+    assert preflight("agent", "file", {"ALE_LLM_MAX_TOKENS": "32000"}) == [], "不跑代码的工具集不查超时与解释器"
+    assert len(preflight("blind", "python", {})) == 1, "单发盲解只查 max_tokens"
+    print("[selftest] 开跑前检查：缺 env.sh / 超时 / max_tokens 拒跑，docker 与非代码工具集不误拦", file=sys.stderr)
+
+
 RESUME_KEYS = ("model", "toolset", "budget", "scorerVersion")
 
 
@@ -527,6 +562,7 @@ def main():
         _resolve_selftest(cfg)
         _scorer_version_selftest()
         _tier_hint_selftest()
+        _preflight_selftest()
         _resume_selftest()
         _collect_selftest()
     task = resolve_task(cfg, os.environ.get("N7_TASK", DEFAULT_TASK))
@@ -543,6 +579,14 @@ def main():
         sys.exit("N7_MODE 只认 blind / agent，给的是 %r" % mode)
     if tools not in agentsolve.TOOLSETS:
         sys.exit("N7_TOOLS 只认 %s，给的是 %r" % (list(agentsolve.TOOLSETS), tools))
+    if cfg.llm.provider != "mock":
+        miss = preflight(mode, tools)
+        if miss and os.environ.get("N7_ALLOW_DEFAULTS") == "1":
+            print("⚠️  N7_ALLOW_DEFAULTS=1：带默认值跑，测量口径与标准命令不同：\n  " + "\n  ".join(miss),
+                  file=sys.stderr)
+        elif miss:
+            sys.exit("拒跑：开跑前检查没过（标准命令见 docs/新增一条数据-playbook.md）：\n  " + "\n  ".join(miss)
+                     + "\n确要复现旧口径时加 N7_ALLOW_DEFAULTS=1")
     client = llm.get_client(cfg.llm)
     cost = CostTracker()
 
