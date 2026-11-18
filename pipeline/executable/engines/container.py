@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 from ...dockercli import docker_bin
 from .base import EngineAdapter, EngineUnavailable, CaseResult, DeployResult
@@ -21,6 +22,23 @@ from .base import EngineAdapter, EngineUnavailable, CaseResult, DeployResult
 DEFAULT_IMAGE = "python:3.12-slim"
 # 单次调用的默认参数：与扩展前的行为一致（只把会话目录传给交付脚本）
 DEFAULT_INVOCATIONS = [{"name": "main", "args": ["{session}"]}]
+
+
+def _artifact_escape_err(arts):
+    """产物目录出现符号链接或越界路径就返回错误原因（否则空串）。
+
+    宿主侧 scorer 会用 os.path.join(artifacts, ...) 打开候选产物；若候选在产物目录里放一个
+    指向宿主路径的符号链接，可信 scorer 打开时会在**宿主侧**跟随过去，读到 expected 或任意
+    宿主文件（框架仓 PR #53 评审意见）。读产物前统一在此拦截。
+    """
+    root = os.path.realpath(str(arts))
+    for p in sorted(Path(arts).rglob("*")):
+        rel = p.relative_to(arts)
+        if p.is_symlink():
+            return "产物目录含符号链接：%s" % rel
+        if not os.path.realpath(str(p)).startswith(root + os.sep):
+            return "产物路径越出产物目录：%s" % rel
+    return ""
 
 
 def _render(args, mapping):
@@ -180,6 +198,11 @@ class ContainerAdapter(EngineAdapter):
                     arts.chmod(0o777)
                 runs, record = self._run_invocations(
                     public, arts, artifact_dirname, invocations, task_meta, case.name, fsize)
+                if record is None and arts is not None:
+                    bad = _artifact_escape_err(arts)
+                    if bad:   # 候选侧行为，判负而非记测量故障
+                        record = {'score': 0.0, 'passed': False,
+                                  'err': bad + '，拒绝判分'}
                 if record is None:
                     first = next((r for r in runs.values() if r.get("json") is not None), None)
                     got = first["json"] if first else None
