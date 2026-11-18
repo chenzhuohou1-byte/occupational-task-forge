@@ -123,7 +123,9 @@ def test_sandbox_lifecycle_and_teardown():
         sbx.close()   # 幂等：第二次不应再发 down
 
     def _subcmds(verb):
-        return [c for c in calls if len(c) > 2 and c[0] == "docker" and c[1] == "compose" and verb in c]
+        # docker_bin() 在 docker 不在 PATH 时返回绝对路径，故按文件名比对 argv[0]
+        return [c for c in calls if len(c) > 2 and os.path.basename(c[0]) == "docker"
+                and c[1] == "compose" and verb in c]
     assert _subcmds("up"), "start 没发 compose up"
     downs = _subcmds("down")
     assert len(downs) == 1, "close 应恰好 down 一次（幂等），实际 %d 次" % len(downs)
@@ -306,8 +308,31 @@ def test_invocation_rendering_and_scorer_signature():
     print("✓ 多次调用参数模板 + 两代 host_scorer 签名兼容")
 
 
+def test_artifact_symlink_guard():
+    """产物目录符号链接/越界路径必须在宿主 scorer 读产物前被拒（PR #53 评审意见）。"""
+    from pipeline.executable.engines import container as C
+
+    with tempfile.TemporaryDirectory() as d:
+        arts = os.path.join(d, "out")
+        os.makedirs(arts)
+        # 干净目录：放普通文件，应放行
+        with open(os.path.join(arts, "base.sqlite"), "w") as f:
+            f.write("ok")
+        assert C._artifact_escape_err(arts) == "", "干净产物目录不该被拒"
+
+        # 指向宿主路径的符号链接：应命中并报出相对路径
+        host_secret = os.path.join(d, "expected.json")
+        with open(host_secret, "w") as f:
+            f.write('{"winner": "leak"}')
+        os.symlink(host_secret, os.path.join(arts, "leak.sqlite"))
+        err = C._artifact_escape_err(arts)
+        assert err and "leak.sqlite" in err, "指向宿主的符号链接必须被拒并点名文件"
+    print("✓ 产物目录符号链接守卫（干净放行 / 逃逸拒判）")
+
+
 def main():
     test_invocation_rendering_and_scorer_signature()
+    test_artifact_symlink_guard()
     test_fault_and_empty_cases()
     test_scorer_imports_pipeline_without_pythonpath()
     test_docker_bin_fallback()
