@@ -34,6 +34,7 @@
     "bench-astro:v1": "runtime/bench-astro/Dockerfile（天文可执行题 H7b/H8b/H9b；python:3.12-slim + numpy/scipy/astropy，astropy-iers-data 钉死）",
     "ale-examinee:py3.12-power-v4": "runtime/examinee-power/Dockerfile（叠在 v1 上，加 requirements-power.txt：OpenDSSDirect.py/dss-python）",
     "bench-medical:v1": "runtime/bench-medical/Dockerfile（医疗/心理/社科/量化 12 题：H3/H6/H7/H8、H2/H4/H5、H9/H10、H1b/H2b/H3b；python:3.11-slim + pandas/numpy/scipy/scikit-learn/statsmodels/matplotlib/openpyxl/pyarrow 钉版）",
+    "bench-neuro:v1": "runtime/bench-neuro/Dockerfile（神经/生理信号方向 5.1/5.2 EEG·MEG·神经影像、4.1 ECG/生理信号；python:3.11-slim + wfdb/mne/nibabel/nilearn + numpy/scipy/pandas/scikit-learn 全量钉版，考生真调）",
     "bench-audio:py3.12-v1": "runtime/bench-audio/Dockerfile（基于已登记的科学镜像，固定 SoundFile 及其依赖）",
     "bench-qiskit:1.2.4-py312-v1": "runtime/bench-qiskit/Dockerfile（Qiskit 1.2.4、NumPy 和 SciPy，固定依赖）",
     "bench-stim:1.15.0-py312-amd64-v1": "runtime/bench-stim/Dockerfile（Stim 1.15.0，按 linux/amd64 构建）"
