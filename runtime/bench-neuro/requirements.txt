@@ -1,0 +1,58 @@
+# bench-neuro:v1 考生/判分镜像 Python 包，服务神经/生理信号方向
+# （实验心理与神经科学 5.1/5.2 EEG/MEG·神经影像，医疗健康 4.1 ECG/生理信号）。
+#
+# 生成方式：在 python:3.11-slim 容器内 `pip install wfdb mne nibabel nilearn
+# numpy scipy pandas scikit-learn`（让 pip 解依赖）后 `pip freeze` 回填的全量钉死表，
+# 含全部传递依赖。Dockerfile 用 --no-deps --only-binary 按此表装、pip check 兜底。
+# 后续改这张表（加包/换版本）必须换镜像 tag（v2、v3…），旧测量与新测量不可比、不回灌
+# （与 ale-examinee / bench-medical / bench-astro 同口径）。
+#
+# Python 3.11（基础镜像 python:3.11-slim，与 bench-medical 同骨架）。
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.5
+aiosignal==1.4.0
+attrs==26.1.0
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+cloudpickle==3.1.2
+contourpy==1.3.3
+cycler==0.12.1
+decorator==5.3.1
+fonttools==4.68.0
+frozenlist==1.8.0
+fsspec==2026.9.0
+idna==3.20
+importlib_resources==7.1.0
+Jinja2==3.1.6
+joblib==1.6.0
+kiwisolver==1.5.1
+lazy-loader==0.6
+MarkupSafe==3.0.4
+matplotlib==3.11.2
+mne==1.13.2
+multidict==7.2.1
+narwhals==2.29.0
+nibabel==5.5.0
+nilearn==0.14.1
+numpy==2.4.6
+packaging==26.3
+pandas==3.1.1
+pillow==13.0.0
+platformdirs==4.14.5
+pooch==1.9.0
+propcache==0.5.4
+pycparser==3.12
+pyparsing==3.3.3
+python-dateutil==4.0.0
+requests==2.34.2
+scikit-learn==1.9.1
+scipy==1.17.1
+soundfile==0.14.0
+threadpoolctl==3.8.0
+tqdm==4.70.1
+typing_extensions==4.16.0
+tzdata==2026.6
+urllib3==2.8.0
+wfdb==4.3.1
+yarl==1.25.1
