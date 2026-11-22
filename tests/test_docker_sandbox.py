@@ -99,7 +99,7 @@ def test_pure():
         joined = " ".join(cmd)
         i = cmd.index("--entrypoint")
         opts = cmd[:i]
-        assert opts[:3] == ["docker", "run", "--rm"], opts
+        assert os.path.basename(opts[0]) == "docker" and opts[1:3] == ["run", "--rm"], opts
         assert ["--network", "none"] == opts[opts.index("--network"):opts.index("--network") + 2]
         assert "--read-only" in opts and "--cap-drop" in opts and "no-new-privileges" in opts
         assert ["--pull", "never"] == opts[opts.index("--pull"):opts.index("--pull") + 2]
