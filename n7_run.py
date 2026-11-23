@@ -299,15 +299,28 @@ def write_card(task, entry):
     tier = d.get("tier") if ok else None
     # §6.5 测试集只收实测 L2+：卡上是测试集、新算出来是 L1 或推定级 → 用途跟着改训练集。
     # 只降不升：训练集挪测试集还要看家族与溯源，由人决定。定不出级时不动。
+    # 例外：本函数自己降的（元数据.用途自动降级 有记录），补测到实测 L2+ 时改回测试集。
+    # 便宜档、前沿档分两次回填，先写的那条总会让 qc 给推定级，不改回就要人每次手动挪。
     purpose, _ = qc.task_purpose(task)
+    meta = card.get("元数据") if isinstance(card.get("元数据"), dict) else None
+    auto = bool(meta and meta.get("用途自动降级"))
     fit, why = qc.purpose_tier_ok(purpose, tier, d.get("级别来源")) if ok else (True, "")
     moved = ""
     if not fit:
         card["用途"] = "训练集"
+        if d.get("级别来源") != "实测":   # 实测 L1 是定论，不留改回的口子
+            card.setdefault("元数据", {})["用途自动降级"] = "%s %s" % (tier, d.get("级别来源"))
         moved = "；用途 测试集 → 训练集（%s %s）" % (tier, d.get("级别来源"))
         print("ℹ️  %s：卡上用途是测试集，但 qc 定级为 %s %s，测试集只收实测 L2 及以上，"
-              "已改成训练集。补测到实测 L2+ 后可手动改回测试集。" % (task.task_id, tier, d.get("级别来源")),
-              file=sys.stderr)
+              "已改成训练集。补测到实测 L2+ 后 --write-card 会自动改回。"
+              % (task.task_id, tier, d.get("级别来源")), file=sys.stderr)
+    elif auto and purpose == "训练集" and ok and d.get("级别来源") == "实测":
+        del meta["用途自动降级"]
+        if tier in ("L2", "L3", "L4"):
+            card["用途"] = "测试集"
+            moved = "；用途 训练集 → 测试集（自动降级后补测到实测 %s）" % tier
+            print("ℹ️  %s：用途曾因推定级被自动降为训练集，现补测到实测 %s，已改回测试集。"
+                  % (task.task_id, tier), file=sys.stderr)
     if not appended and card.get("tier") == tier and not moved:
         return False, "完全相同的条目已在卡上、tier 已是 %s，跳过" % tier
     card["tier"] = tier
@@ -379,10 +392,20 @@ def _write_card_selftest(task):
         write_card(tasks.load_task(d), {**front, "nRuns": 3, "fullPassRate": 0.0})
         c = tasks.load_task(d).card
         assert c["用途"] == "训练集", (c.get("tier"), c.get("用途"))
+        assert c["元数据"].get("用途自动降级"), "推定级自动降级要留记录"
+        # 自动降级后补测到实测 L2+ → 改回测试集（便宜档、前沿档分两次回填的常见顺序）
+        _set(measuredDifficulty=c["measuredDifficulty"][:n0])
+        write_card(tasks.load_task(d), {**front, "fullPassRate": 0.2})   # 只有前沿档 10 跑 2/10 → 实测 L3
+        c = tasks.load_task(d).card
+        assert c["用途"] == "测试集" and "用途自动降级" not in c["元数据"], (c.get("tier"), c.get("用途"))
+        # 人手设的训练集（无自动降级记录）补测到实测 L3 仍不动
+        _set(用途="训练集")
+        write_card(tasks.load_task(d), {**front, "fullPassRate": 0.2, "measuredAt": "2026-11-23"})
+        assert tasks.load_task(d).card["用途"] == "训练集", "人手设的训练集不该被改回测试集"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     assert open(os.path.join(task.dir, "task_card.json"), encoding="utf-8").read() == orig, "原卡被改了"
-    print("[selftest] write_card：追加/去重/拒写 nRuns=0、tier 按 qc.difficulty_tier 回填与刷新、测试集定出 L1/推定级自动改训练集，原卡未动",
+    print("[selftest] write_card：追加/去重/拒写 nRuns=0、tier 按 qc.difficulty_tier 回填与刷新、测试集定出 L1/推定级自动改训练集、自动降级后补测到实测 L2+ 改回，原卡未动",
           file=sys.stderr)
 
 
