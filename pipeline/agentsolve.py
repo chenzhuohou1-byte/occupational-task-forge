@@ -296,6 +296,11 @@ def run_python(wd, code, tag, timeout=None, out_limit=None):
            "XDG_CONFIG_HOME": os.path.join(fake_home, ".config"),
            "XDG_CACHE_HOME": os.path.join(fake_home, ".cache"),
            "XDG_DATA_HOME": os.path.join(fake_home, ".local", "share")}
+    # Java 不认 HOME：user.home 取自 getpwuid（真家目录，沙箱里不可写）。QuPath 0.5.1 的 script 子命令
+    # 启动就要在 user.home/.javacpp/cache 解 OpenCV/OpenBLAS 本地库，写不了直接 UnsatisfiedLinkError
+    # 退出（11-25 病理 0022 冒烟实测）。只在路径不含空白时设：JAVA_TOOL_OPTIONS 按空白切分。
+    if not re.search(r"\s", fake_home):
+        env["JAVA_TOOL_OPTIONS"] = "-Duser.home=%s" % fake_home
     ub = _user_base(py)
     if ub:
         env["PYTHONUSERBASE"] = ub
@@ -419,6 +424,31 @@ def _first_action(text):
     return None
 
 
+# 步内重采样（N7_MARKUP_RESAMPLE=N，默认 0 = 与之前行为逐字节一致）。只对两类与题目无关的坏样本：
+#  ① 工具标记失控：content 里 <invoke>/<parameter> 标记 ≥ 50 处且写满（或被 ALE_LLM_ABORT_MARKUP 断流）；
+#  ② content 为空、finish_reason=stop（Claude 渠道偶发把整个回答放进推理通道）。
+# 这两类原先直接判整跑测量故障；11-25 Sonnet 5.5 看图考法在外部专家题上每 5–15 步就出一次，40–80 步的题
+# 一跑都凑不齐。重采样不改对话、不改模型看到的任何内容，每次坏样本都留证并计入 步内重采样。
+# 其余写满（推理占满、正常长输出写满）仍按原规则判测量故障。
+MARKUP_RESAMPLE = int(os.environ.get("N7_MARKUP_RESAMPLE", "0") or 0)
+
+
+def resample_eligible(res):
+    text = res.text or ""
+    if res.finish_reason == "length":
+        # 与 llm._read_stream 的提前截断同一口径：被截断的一律算；没截断时数宽口径标记
+        # （<invoke_placeholder> 这类变体也算，11-25 病理第 5 槽位实例），不用 TOOL_MARKUP_RE 的 \b
+        if (((getattr(res, "raw", None) or {}).get("stream") or {}).get("aborted_markup")
+                or len(RESAMPLE_MARKUP_RE.findall(text)) >= 50):
+            return True
+    return not text.strip() and res.finish_reason == "stop"
+
+
+# 重发判据用的宽口径标记：标签名后接空白、>、_、/ 都算（TOOL_MARKUP_RE 只作噪声计数，口径不动）
+RESAMPLE_MARKUP_RE = re.compile(r"</?(?:invoke|parameter|function_calls)(?=[\s>_/])")
+
+
+
 def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="python"):
     """让模型以 agent 形态做题：多步、可读附件、可分次写交付文件、可跑代码，最后判分。
 
@@ -466,19 +496,30 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
     ]
 
     trace, written, bad_steps, valid, py_runs, eng_tests = [], 0, 0, 0, 0, 0
-    markup_steps, views, view_bytes = 0, 0, 0
+    markup_steps, views, view_bytes, resampled = 0, 0, 0, 0
 
     def _info(**kw):
-        return {"步数": len(trace), "协议噪声步": bad_steps, "工具标记步": markup_steps, **kw}
+        return {"步数": len(trace), "协议噪声步": bad_steps, "工具标记步": markup_steps,
+                "步内重采样": resampled, **kw}
 
     try:
         for step in range(max_steps):
             if vis:
                 vision.prune(msgs)
-            res = llm.chat(msgs)
-            if cost:
-                cost.add("N7-agent", res)
-            if not res.text.strip() or res.finish_reason == "length":
+            tries = 0
+            while True:
+                res = llm.chat(msgs)
+                if cost:
+                    cost.add("N7-agent", res)
+                bad = not res.text.strip() or res.finish_reason == "length"
+                if not (bad and tries < MARKUP_RESAMPLE and resample_eligible(res)):
+                    break
+                # 同一步原样重发（对话不变、模型看到的东西不变），坏样本留证、计数
+                tries += 1
+                resampled += 1
+                qc._save_trace(trace_dir, **{"step_%02d_resample%d" % (step + 1, tries):
+                                             fault_record(step + 1, res)})
+            if bad:
                 # 先留证再抛：原来这里只抛一句话，模型到底吐了什么、网关回了什么全丢了
                 rec = fault_record(step + 1, res)
                 name = "step_%02d_fault" % (step + 1)
@@ -586,7 +627,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                        meta={"max_steps": max_steps, "toolset": TOOLSETS[tools], "有效动作": valid,
                              "协议噪声步": bad_steps, "工具标记步": markup_steps, "write次数": written,
                              "run_python次数": py_runs, "engine_selftest次数": eng_tests,
-                             "view_image次数": views, "图片字节": view_bytes,
+                             "view_image次数": views, "图片字节": view_bytes, "步内重采样": resampled,
                              "work_dir": wd})
         # 不可信 engine 自测起过的一次性沙箱必须销毁，绝不残留跑着的引擎
         if selftest is not None and hasattr(selftest, "close"):
@@ -613,7 +654,7 @@ def agent_solve(task, llm, cost=None, max_steps=20, trace_dir=None, tools="pytho
                   "步数": len(trace), "write次数": written, "协议噪声步": bad_steps,
                   "工具标记步": markup_steps,
                   "run_python次数": py_runs, "engine_selftest次数": eng_tests,
-                  "view_image次数": views,
+                  "view_image次数": views, "步内重采样": resampled,
                   "trace": trace, "trace_dir": trace_dir}
 
 
@@ -692,10 +733,13 @@ def _selftest():
             "import os",
             "for k in ('HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'KICAD_CONFIG_HOME'):",
             "    d = os.path.join(os.environ[k], 'probe'); os.makedirs(d, exist_ok=True)",
-            "    print('home_ok' if os.path.realpath(d).startswith(os.path.realpath('_scratch')) else 'home_bad', k)"]),
+            "    print('home_ok' if os.path.realpath(d).startswith(os.path.realpath('_scratch')) else 'home_bad', k)",
+            # Java 的 user.home 也要钉到假家目录（QuPath 的 javacpp 缓存写在那里）
+            "jto = os.environ.get('JAVA_TOOL_OPTIONS', '')",
+            "print('java_home_ok' if jto == '-Duser.home=' + os.environ['HOME'] else 'java_home_bad', repr(jto))"]),
             "homeprobe")
         shutil.rmtree(wd, ignore_errors=True)
-        assert obs.count("home_ok") == 4 and "home_bad" not in obs, obs
+        assert obs.count("home_ok") == 5 and "home_bad" not in obs, obs
         print("agentsolve 自测④b 假家目录可写且在草稿目录内 OK")
 
         # ⑤ 指定考生解释器（ALE_RUN_PYTHON）后：用的是它、标签记得住，且家目录照旧读不到
@@ -904,6 +948,71 @@ def _fault_selftest(t):
     assert [s.get("工具标记") for s in r["trace"]] == [True, True, None], r["trace"]
     assert r["trace"][0]["action"] == "list_files", "夹带标记的步解析结果变了：%s" % r["trace"][0]
     print("agentsolve 自测⑦工具标记只计数不改解析 OK（工具标记步 2、协议噪声步 1）")
+
+    # ⑦b 步内重采样（N7_MARKUP_RESAMPLE）：默认 0 时标记失控照旧判故障（上面①已测）；
+    # 开到 2 时同一步重发、坏样本留证并计数；推理占满（空 + length）不在重采样范围内
+    global MARKUP_RESAMPLE
+    saved_rs = MARKUP_RESAMPLE
+    MARKUP_RESAMPLE = 2
+    try:
+        empty_stop = LLMResult(text="", finish_reason="stop", raw=raw)
+        td = tempfile.mkdtemp(prefix="ale_fault_")
+        try:
+            ok, r = agent_solve(t, _ScriptedClient([json.dumps({"action": "list_files"}), cases[0][0],
+                                                    empty_stop, json.dumps({"action": "finish"})]),
+                                max_steps=5, trace_dir=td)
+            assert r["步内重采样"] == 2 and r["步数"] == 2, r
+            assert os.path.isfile(os.path.join(td, "step_02_resample1.json")), os.listdir(td)
+            assert os.path.isfile(os.path.join(td, "step_02_resample2.json")), os.listdir(td)
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+        try:   # 重采样用完仍坏 → 照旧判测量故障
+            agent_solve(t, _ScriptedClient([cases[0][0]] * 3), max_steps=5)
+            raise AssertionError("重采样用完仍是标记失控，应抛测量故障")
+        except MeasurementFault as e:
+            assert e.info.get("步内重采样") == 2, e.info
+        try:   # 推理占满（空 + length）不重采样
+            agent_solve(t, _ScriptedClient([LLMResult(text="", finish_reason="length", raw=raw),
+                                            json.dumps({"action": "finish"})]), max_steps=5)
+            raise AssertionError("推理占满不该被重采样吞掉")
+        except MeasurementFault as e:
+            assert e.info.get("步内重采样") == 0, e.info
+        # 变体标签 <invoke_placeholder>（\b 认不出）与被提前截断的回复也要重发
+        variant = LLMResult(text="<invoke_placeholder>\n</invoke_placeholder>\n\n\n" * 60,
+                            finish_reason="length", raw=raw)
+        assert len(TOOL_MARKUP_RE.findall(variant.text)) < 50 and resample_eligible(variant)
+        cut = LLMResult(text="<invoke_x>" * 3, finish_reason="length",
+                        raw=dict(raw, stream=dict(raw["stream"], aborted_markup=60)))
+        assert resample_eligible(cut), "被提前截断的回复必须进重发"
+        assert not resample_eligible(LLMResult(text="正常长输出" * 500, finish_reason="length", raw=raw))
+        ok, r = agent_solve(t, _ScriptedClient([variant, json.dumps({"action": "finish"})]), max_steps=3)
+        assert r["步内重采样"] == 1, r
+    finally:
+        MARKUP_RESAMPLE = saved_rs
+    print("agentsolve 自测⑦b 步内重采样 OK（标记失控/变体标签/被截断/空 stop 重发并留证、用完仍判故障、推理占满与正常写满不重发）")
+
+    # ⑦c 流式读取的标记失控早停（ALE_LLM_ABORT_MARKUP）：标记被切在两个 chunk 之间也数得到；默认不启用
+    from . import llm as _llm
+
+    def _sse(pieces):
+        out = [("data: " + json.dumps({"choices": [{"delta": {"content": p}}]})).encode() for p in pieces]
+        return out + [b"data: [DONE]"]
+    pieces = ['<inv', 'oke name="x">\n</invoke>\n\n'] * 30 + ["tail"]
+    saved_ab = os.environ.get("ALE_LLM_ABORT_MARKUP")
+    try:
+        os.environ.pop("ALE_LLM_ABORT_MARKUP", None)
+        d = _llm._read_stream(_sse(pieces))
+        assert d["choices"][0]["message"]["content"].endswith("tail") and "aborted_markup" not in d["_stream"]
+        os.environ["ALE_LLM_ABORT_MARKUP"] = "20"
+        d = _llm._read_stream(_sse(pieces))
+        assert d["_stream"].get("aborted_markup") == 20 and d["choices"][0]["finish_reason"] == "length", d["_stream"]
+        assert d["choices"][0]["message"]["content"].count("<invoke") == 20
+    finally:
+        if saved_ab is None:
+            os.environ.pop("ALE_LLM_ABORT_MARKUP", None)
+        else:
+            os.environ["ALE_LLM_ABORT_MARKUP"] = saved_ab
+    print("agentsolve 自测⑦c 流式标记失控早停 OK（跨 chunk 计数、默认不启用）")
 
 
 if __name__ == "__main__":

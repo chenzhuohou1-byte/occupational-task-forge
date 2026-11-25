@@ -159,6 +159,11 @@ def _read_stream(resp):
     """
     text, fin, usage, model, n = [], "", {}, "", 0
     keys, reasoning, tool_calls, saw_done = {}, [], [], False
+    # 工具标记失控早停（ALE_LLM_ABORT_MARKUP=N，默认 0 不启用）：Sonnet 5.5 在这个网关上偶发把自家
+    # <invoke> 标记成千遍地写到 max_tokens（11-25 实测单步 130 s、1.4 万 token，网关不认 stop）。
+    # 累计到 N 处就断流，finish_reason 记 length（与写满同一种故障），_stream.aborted_markup 留证。
+    abort_at = int(os.environ.get("ALE_LLM_ABORT_MARKUP", "0") or 0)
+    n_markup, aborted, carry = 0, False, ""
     for raw in resp:
         line = raw.decode("utf-8", "ignore").strip()
         if not line.startswith("data:"):
@@ -174,9 +179,11 @@ def _read_stream(resp):
         model = j.get("model") or model
         if j.get("usage"):
             usage = j["usage"]
+        piece = []
         for c in j.get("choices") or []:
             delta = c.get("delta") or {}
             text.append(delta.get("content") or "")
+            piece.append(delta.get("content") or "")
             for k, v in delta.items():
                 if v not in (None, "", [], {}):
                     keys[k] = keys.get(k, 0) + 1
@@ -185,12 +192,21 @@ def _read_stream(resp):
             if delta.get("tool_calls"):
                 tool_calls.append(delta["tool_calls"])
             fin = c.get("finish_reason") or fin
+        if abort_at and piece:
+            # 增量计数：带上一段末尾 6 字符（不足一个完整 "<invoke"），跨 chunk 切开的标记也数得到
+            s = carry + "".join(piece)
+            n_markup += s.count("<invoke")
+            carry = s[-6:]
+            if n_markup >= abort_at:
+                aborted, fin = True, "length"
+                break
     if not n:
         raise ConnectionError("网关流式响应为空")
     return {"model": model, "usage": usage,
             "choices": [{"message": {"content": "".join(text)}, "finish_reason": fin}],
             "_stream": {"chunks": n, "saw_done": saw_done, "delta_keys": keys,
-                        "reasoning_content": "".join(reasoning), "tool_calls": tool_calls}}
+                        "reasoning_content": "".join(reasoning), "tool_calls": tool_calls,
+                        **({"aborted_markup": n_markup} if aborted else {})}}
 
 
 def get_client(cfg):
