@@ -646,7 +646,13 @@ def main():
                         "runtime": agentsolve.runtime()[3],
                         # 看图考法的两个口径：显示长边上限、上下文保留张数（换了就不可比）
                         **({"vision": {"maxSide": vision.MAX_SIDE, "keepImages": vision.KEEP}}
-                           if (mode == "agent" and tools == "vision") else {})},
+                           if (mode == "agent" and tools == "vision") else {}),
+                        # 步内重采样/标记失控早停（agentsolve.MARKUP_RESAMPLE、ALE_LLM_ABORT_MARKUP）：
+                        # 只在开了时记，没开的测量 budget 与之前逐字节一致
+                        **({"markupResample": agentsolve.MARKUP_RESAMPLE}
+                           if (mode == "agent" and agentsolve.MARKUP_RESAMPLE) else {}),
+                        **({"abortMarkup": int(os.environ["ALE_LLM_ABORT_MARKUP"])}
+                           if int(os.environ.get("ALE_LLM_ABORT_MARKUP", "0") or 0) else {})},
             "scorerVersion": scorer_version,
             "nRuns": n_ok,
             "fullPassRate": round(sum(1 for r in runs if r["passed"]) / n_ok, 4) if n_ok else None,
