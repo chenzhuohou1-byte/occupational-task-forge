@@ -20,7 +20,9 @@
     "kicad": "macOS 考生环境 py3.12-sci-v3（~/ale-runtime/env.sh 的 ALE_RUN_SOFTWARE），Docker 镜像里没有",
     "blender": "同上",
     "inkscape": "同上",
-    "qupath": "macOS 宿主应用 ~/Applications/QuPath-0.5.1-arm64.app（外部专家病理题 0022 的作答与判分用），Docker 镜像里没有"
+    "qupath": "macOS 宿主应用 ~/Applications/QuPath-0.5.1-arm64.app（外部专家病理题 0022 的作答与判分用），Docker 镜像里没有",
+    "java": "macOS 宿主 ~/ale-runtime/{jdk21,maven,m2repo}（Temurin 21.0.13.1 + Maven 3.9.16 + 离线依赖），考生沙箱经 ALE_RUN_SOFTWARE/ALE_RUN_PATH 放行，复现见 runtime/bench-java21/；Docker 考生镜像里没有",
+    "maven": "同 java"
   },
   "images": {
     "ale-examinee:py3.12-sci-v1": "runtime/examinee/Dockerfile",

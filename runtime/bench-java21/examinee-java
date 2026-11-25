@@ -1,0 +1,4 @@
+#!/bin/sh
+# 见同目录 mvn：java.io.tmpdir 钉到 TMPDIR（macOS JDK 默认的 /var/folders 在考生沙箱里不可写）。
+R="$(cd "$(dirname "$0")/.." && pwd)"
+exec "$R/jdk21/Contents/Home/bin/java" "-Djava.io.tmpdir=${TMPDIR:-/tmp}" "$@"
