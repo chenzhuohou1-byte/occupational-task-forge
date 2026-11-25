@@ -435,9 +435,17 @@ MARKUP_RESAMPLE = int(os.environ.get("N7_MARKUP_RESAMPLE", "0") or 0)
 
 def resample_eligible(res):
     text = res.text or ""
-    if res.finish_reason == "length" and len(TOOL_MARKUP_RE.findall(text)) >= 50:
-        return True
+    if res.finish_reason == "length":
+        # 与 llm._read_stream 的提前截断同一口径：被截断的一律算；没截断时数宽口径标记
+        # （<invoke_placeholder> 这类变体也算，11-25 病理第 5 槽位实例），不用 TOOL_MARKUP_RE 的 \b
+        if (((getattr(res, "raw", None) or {}).get("stream") or {}).get("aborted_markup")
+                or len(RESAMPLE_MARKUP_RE.findall(text)) >= 50):
+            return True
     return not text.strip() and res.finish_reason == "stop"
+
+
+# 重发判据用的宽口径标记：标签名后接空白、>、_、/ 都算（TOOL_MARKUP_RE 只作噪声计数，口径不动）
+RESAMPLE_MARKUP_RE = re.compile(r"</?(?:invoke|parameter|function_calls)(?=[\s>_/])")
 
 
 
@@ -969,9 +977,19 @@ def _fault_selftest(t):
             raise AssertionError("推理占满不该被重采样吞掉")
         except MeasurementFault as e:
             assert e.info.get("步内重采样") == 0, e.info
+        # 变体标签 <invoke_placeholder>（\b 认不出）与被提前截断的回复也要重发
+        variant = LLMResult(text="<invoke_placeholder>\n</invoke_placeholder>\n\n\n" * 60,
+                            finish_reason="length", raw=raw)
+        assert len(TOOL_MARKUP_RE.findall(variant.text)) < 50 and resample_eligible(variant)
+        cut = LLMResult(text="<invoke_x>" * 3, finish_reason="length",
+                        raw=dict(raw, stream=dict(raw["stream"], aborted_markup=60)))
+        assert resample_eligible(cut), "被提前截断的回复必须进重发"
+        assert not resample_eligible(LLMResult(text="正常长输出" * 500, finish_reason="length", raw=raw))
+        ok, r = agent_solve(t, _ScriptedClient([variant, json.dumps({"action": "finish"})]), max_steps=3)
+        assert r["步内重采样"] == 1, r
     finally:
         MARKUP_RESAMPLE = saved_rs
-    print("agentsolve 自测⑦b 步内重采样 OK（标记失控/空 stop 重发并留证、用完仍判故障、推理占满不重发）")
+    print("agentsolve 自测⑦b 步内重采样 OK（标记失控/变体标签/被截断/空 stop 重发并留证、用完仍判故障、推理占满与正常写满不重发）")
 
     # ⑦c 流式读取的标记失控早停（ALE_LLM_ABORT_MARKUP）：标记被切在两个 chunk 之间也数得到；默认不启用
     from . import llm as _llm
