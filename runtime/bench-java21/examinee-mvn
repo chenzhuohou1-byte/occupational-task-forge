@@ -1,0 +1,12 @@
+#!/bin/sh
+# 考生沙箱用的 mvn 包装：JDK 21 + Maven 3.9.16（离线依赖仓库写在 maven/conf/settings.xml 的 localRepository）。
+# macOS 的 JDK 不认 TMPDIR、默认往 /var/folders/.../T 写临时文件，沙箱里不可写（Mockito inline 起不来），
+# 所以把 java.io.tmpdir 钉到 run_python 给的 TMPDIR（草稿目录）；surefire 派生的 JVM 经 JAVA_TOOL_OPTIONS 继承。
+R="$(cd "$(dirname "$0")/.." && pwd)"
+export JAVA_HOME="$R/jdk21/Contents/Home"
+# Mockito inline 要给自己的 JVM 挂 Byte Buddy agent，默认走「自附加」（attach 用 unix socket，沙箱 deny network*
+# 一并挡了）。启动时直接 -javaagent 挂上同一个 byte-buddy-agent，就不需要自附加（Mockito 5 官方推荐的 JDK 21 用法）。
+T="${TMPDIR:-/tmp}"
+BBA="$R/m2repo/net/bytebuddy/byte-buddy-agent/1.17.8/byte-buddy-agent-1.17.8.jar"
+export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$T -javaagent:$BBA${JAVA_TOOL_OPTIONS:+ $JAVA_TOOL_OPTIONS}"
+exec "$R/maven/bin/mvn" "$@"

@@ -67,16 +67,23 @@ def cmd_start(work):
 
 
 def _copy_reference(out, drop=None):
+    """参考产物原样拷成 output/。交付物可以是子目录（如整份工程 project/），整树拷。"""
     os.makedirs(out, exist_ok=True)
     src = os.path.join(REF, _conf()["golden"])
     for fn in sorted(os.listdir(src)):
-        if fn != drop:
-            shutil.copy2(os.path.join(src, fn), os.path.join(out, fn))
+        if fn == drop or fn in (".DS_Store", "__pycache__"):
+            continue
+        p = os.path.join(src, fn)
+        if os.path.isdir(p):
+            shutil.copytree(p, os.path.join(out, fn), dirs_exist_ok=True)
+        else:
+            shutil.copy2(p, os.path.join(out, fn))
 
 
 def cmd_neg(out):
-    """删掉一个交付文件：触发「交付齐全」硬闸门 → 整题 0。"""
-    files = sorted(os.listdir(os.path.join(REF, _conf()["golden"])))
+    """删掉一个交付项（文件或目录，按名字排序取第一个）：触发「交付齐全」硬闸门 → 整题 0。"""
+    files = sorted(f for f in os.listdir(os.path.join(REF, _conf()["golden"]))
+                   if f not in (".DS_Store", "__pycache__"))
     _copy_reference(out, drop=files[0])
 
 
@@ -129,7 +136,8 @@ def cmd_evaluate(output, reference):
                 "correct": bool(x.get("passed")), "weight": x.get("weight")} for x in rows]
     print(json.dumps({"score": score, "passed": passed, "errors": errors, "details": details,
                       "_expert": {"score": d["score"], "max_score": d.get("max_score"),
-                                  "failed": failed, **{k: d[k] for k in ("m02_mode",) if k in d}}},
+                                  "failed": failed,
+                                  **{k: d[k] for k in ("m02_mode",) + tuple(c.get("passKeys") or ()) if k in d}}},
                      ensure_ascii=False))
     return 0
 
@@ -194,9 +202,17 @@ def _verify_manifest(pkg):
     return man, bad
 
 
-def _prompt(pkg):
+def _prompt(pkg, b=None):
+    """专家题面 + 本环境附注。`bridge.promptRewrite`（[[原文, 改成], ...]）先于默认的 deliverables/→output/
+    替换执行（如专家题面写的 /app/deliverables/、/app/workspace/ 绝对路径）；`bridge.promptNote` 整段替换
+    默认附注（默认附注里的契约文件名是病理/Blender 两题的，别的包要自己写）。"""
+    b = b or {}
     text = open(os.path.join(pkg, "agent", "任务描述.md"), encoding="utf-8").read().strip()
-    return text.replace("`deliverables/`", "`output/`").replace("deliverables/", "output/") + NOTE
+    for old, new in b.get("promptRewrite") or []:
+        text = text.replace(old, new)
+    note = b.get("promptNote")
+    return text.replace("`deliverables/`", "`output/`").replace("deliverables/", "output/") + (
+        ("\n\n---\n" + note.strip() + "\n") if note else NOTE)
 
 
 def _input_summary(d):
@@ -244,11 +260,13 @@ def build(pkg, conf, out_dir, force=False):
         f.write(SHIM_MAIN)
 
     n_in, sz_in = _input_summary(inp)
-    golden_files = sorted(os.listdir(os.path.join(ref, b["golden"])))
+    golden_files = sorted(f for f in os.listdir(os.path.join(ref, b["golden"])) if f not in SKIP_NAMES)
     card = dict(conf["card"])
     card.update({
-        "prompt": _prompt(pkg),
-        "交付要求": {fn: "格式见 input/constraint/任务与输出契约.md" for fn in golden_files},
+        "prompt": _prompt(pkg, b),
+        "交付要求": {(fn + "/" if os.path.isdir(os.path.join(ref, b["golden"], fn)) else fn):
+                     "格式见 %s" % b.get("contractRef", "input/constraint/任务与输出契约.md")
+                     for fn in golden_files},
         "环境": {"input": "只读输入：专家包 agent/input/ 原样（%d 个文件、约 %.1f MB），另附 任务信息.md、"
                           "software_环境说明.md" % (n_in, sz_in / 1e6),
                  "software": conf.get("softwareNote", ""),
@@ -334,12 +352,21 @@ _EV_RE = re.compile(r"(evaluator|grade_v2|neg_fixture|grading_truth|Rubrics|考�
 _NET_RE = re.compile(r"(\bcurl\b|\bwget\b|urlopen|urllib\.request|requests\.get|git clone|pip3? install)")
 
 
-def _audit_session(runs_dir, name):
-    """zulu 会话记录里逐个工具调用查两类：碰评测侧文件、联网。找不到会话记录返回 None（只能信 meta）。"""
+def _audit_session(runs_dir, name, sessions_dir=None, extra=None):
+    """zulu 会话记录里逐个工具调用查两类：碰评测侧文件、联网。找不到会话记录返回 None（只能信 meta）。
+
+    会话记录默认在轮次目录旁（`<run>_session.json` / `<run>__*session*.json`）；另放一处的用 sessions_dir，
+    文件名以 `<run>_` 开头即可（侯雅婷 11-24 的 `traces/run01_75分_<会话ID>.json`）。同一轮匹配到多份会报错，
+    不猜哪份是真的。extra 是这道题评测侧文件名的正则（`bridge.auditPatterns`），与通用名单合并查。"""
     cand = glob.glob(os.path.join(runs_dir, name + "_session.json")) + \
         glob.glob(os.path.join(runs_dir, glob.escape(name) + "__*session*.json"))
+    if sessions_dir:
+        cand += glob.glob(os.path.join(sessions_dir, glob.escape(name) + "_*.json"))
     if not cand:
         return None
+    if len(cand) > 1:
+        raise SystemExit("%s 匹配到多份会话记录，不知道该查哪份：%s" % (name, cand))
+    ev2 = re.compile("|".join(extra)) if extra else None
     flags = set()
     s = json.load(open(cand[0], encoding="utf-8"))
     for m in s.get("messages") or []:
@@ -350,13 +377,13 @@ def _audit_session(runs_dir, name):
                 p = json.dumps(ch.get("params"), ensure_ascii=False)
                 if ch.get("toolName") in ("web_fetch", "web_search") or _NET_RE.search(p):
                     flags.add("联网")
-                if _EV_RE.search(p):
+                if _EV_RE.search(p) or (ev2 and ev2.search(p)):
                     flags.add("评测侧")
     return sorted(flags)
 
 
 def import_runs(task_dir, runs_dir, agent, model, effort, deliverables="deliverables", timeout_min=None,
-                exclude=None, measured_at=None):
+                exclude=None, measured_at=None, sessions_dir=None):
     """外部 agent 的逐轮交付物 → 用卡上判分器重判 → 一条 measuredDifficulty。返回 (entry, 逐轮明细)。
 
     不信外部自己记的分：每轮交付物原件拷进沙箱 output/，走 harness.evaluate 重判；外部记的分只拿来对账。
@@ -369,10 +396,13 @@ def import_runs(task_dir, runs_dir, agent, model, effort, deliverables="delivera
     for name, deliv, meta_p in _find_runs(runs_dir, deliverables, exclude):
         meta = json.load(open(meta_p, encoding="utf-8")) if os.path.isfile(meta_p) else {}
         own = os.path.join(os.path.dirname(deliv), "判分结果.json")   # 侯雅婷的跑分脚本把外部记分放在轮次目录里
-        if "score" not in meta and os.path.isfile(own):
-            meta["score"] = json.load(open(own, encoding="utf-8")).get("score")
+        own2 = os.path.join(runs_dir, name + "_grade.json")            # 或轮次目录旁的 <run>_grade.json（ale-001）
+        for o in (own, own2):
+            if "score" not in meta and os.path.isfile(o):
+                meta["score"] = json.load(open(o, encoding="utf-8")).get("score")
         flags = {f[0] if isinstance(f, (list, tuple)) else str(f) for f in meta.get("flags") or []}
-        audited = _audit_session(runs_dir, name)
+        audited = _audit_session(runs_dir, name, sessions_dir,
+                                 (task.card["evaluation"].get("bridge") or {}).get("auditPatterns"))
         flags |= set(audited or [])
         row = {"run": name, "flags": sorted(flags), "外部记分": meta.get("score"),
                "会话复查": "无会话记录" if audited is None else "已查"}
@@ -429,6 +459,7 @@ def main():
     i.add_argument("--timeout-min", type=int, default=None)
     i.add_argument("--measured-at", help="轮次记录里没有开始时间时，手填实跑日期 YYYY-MM-DD")
     i.add_argument("--exclude", help="轮次目录名匹配这个正则的不导入（如外部已剔除的不独立轮）")
+    i.add_argument("--sessions", help="会话记录另放的目录（文件名以 <轮次名>_ 开头）")
     i.add_argument("--out", help="逐轮明细写到这里（不入库）"); i.add_argument("--write-card", action="store_true")
     a = ap.parse_args()
     if a.cmd == "build":
@@ -438,7 +469,7 @@ def main():
             print("  ⚠️  " + p)
         return 1 if problems else 0
     entry, rows = import_runs(a.task_dir, a.runs, a.agent, a.model, a.effort, a.deliverables, a.timeout_min,
-                              a.exclude, a.measured_at)
+                              a.exclude, a.measured_at, a.sessions)
     for x in rows:
         print("  %-8s %s" % (x["run"], {k: v for k, v in x.items() if k != "run"}))
     print(json.dumps(entry, ensure_ascii=False, indent=1))
