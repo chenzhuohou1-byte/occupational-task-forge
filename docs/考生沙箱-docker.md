@@ -178,3 +178,36 @@ docker build -t bench-medical:v1 runtime/bench-medical
   "装上但用不了"（缺字体、无显示后端、ABI 不配）会在构建期就失败。
 - 同样遵守"tag 就是测量口径"：改 `runtime/bench-medical/requirements.txt` 或 Dockerfile 就要
   换 tag（v2…），旧测量不回灌。
+
+## 10. 生命科学成像镜像 `ale-examinee:py3.12-sci-v5`（2026-11-04 构建，2026-11-26 登记）
+
+3.1 结构、3.2 基因组、3.3 细胞与成像、3.4 单细胞题在用（卡上测量记为 `docker-py3.12-sci-v5`）。
+**叠在 bio-v2 上**，v1 与 bio-v2 的分发一个版本都不动，只新增：
+
+- Python 82 个分发（`runtime/examinee-sci-v5/requirements-sci-v5.txt`，全量钉死）：cellpose 4.2.1.1 及
+  torch 2.15.0 / torchvision 0.29.2 的 CPU 轮子、opencv-python-headless，squidpy 1.8.3、trackpy 0.7、
+  igraph 1.0.0 + leidenalg 0.12.0（scanpy 的 Leiden 后端）、dask-image、spatialdata 等。
+- cellpose 默认权重 `cpsam`（1233587898 字节，sha256 `e1440429…abe2`）放进镜像：考生和判分容器都断网，
+  运行时下载必然失败。权重不入库，构建前按 Dockerfile 注释放到 `runtime/examinee-sci-v5/models/cpsam`。
+- 命令行工具沿用 bio-v2：samtools / bcftools / tabix 1.21、bwa 0.7.18、minimap2 2.27（Debian 13 包）。
+
+```bash
+docker build -t ale-examinee:py3.12-sci-v1 runtime/examinee        # 先有 v1、bio-v2（已有就跳过）
+docker build -t ale-examinee:py3.12-bio-v2 runtime/examinee-bio
+docker build -t ale-examinee:py3.12-sci-v5 runtime/examinee-sci-v5
+export ALE_RUN_SANDBOX=docker ALE_RUN_DOCKER_IMAGE=ale-examinee:py3.12-sci-v5
+```
+
+- 已有测量用镜像 `c49679fd` 的机器不要用同一 tag 重建，否则 tag 会被挪到新镜像上；
+  验证叠层配方请另起 tag（如 `ale-examinee:py3.12-sci-v5-rebuild`）。
+- **不是 bio-v2 改名**：bio-v2 的 48 个分发（pysam 0.24.1 等）在 v5 里逐个同版本，但 v5 另有上面 82 个分发和
+  cellpose 权重。在 v5 下测的题，考生可能用到这些包（如 igraph/leidenalg），不能把测量改记成 bio-v2。
+- 版本钉死依据：测量用的本机镜像 `sha256:c49679fd6f102383c6acced2cec4cc27cfd9d798fb0a3c8e2b541e8283d3a350`
+  （arm64）当时用单层配方从与 v1 同 digest 的 python:3.12-slim 直接建成。它的容器内 pip freeze 存为
+  `runtime/examinee-sci-v5/pip-freeze-c49679fd.txt`，恰好等于 v1 ∪ bio-v2 ∪ 新增表（逐个同版本）。
+  按本 Dockerfile 叠层重建，镜像 ID 会与 c49679fd 不同；tag 仍是测量口径。
+- 构建期冒烟（`smoke_sci_v5.py`）逐个核对 82 个分发的版本，真跑 torch CPU、cv2 连通域、scanpy 的两种
+  Leiden 后端，并检查 cellpose 读的是镜像内权重。它在 c49679fd 里以 `--read-only --network none`、非 root
+  实测通过（需给可写 HOME/MPLCONFIGDIR/NUMBA_CACHE_DIR）。
+- 镜像约 8 GB。cpsam 权重本身 1.2 GB，cellpose 加载时内存至少要这么多，考生容器默认 2g；
+  用 cellpose 的题要实测内存并在卡上注明。
